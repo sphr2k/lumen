@@ -11,6 +11,7 @@ export type LumenVerifyInput = Readonly<{
   bundleDigest: string;
   releasePath?: string;
   runtimePath?: string;
+  fetchTimeoutMs?: number;
   fetch?: typeof fetch;
 }>;
 
@@ -93,24 +94,25 @@ export async function verifyLumenBundle(input: LumenVerifyInput): Promise<LumenV
 async function verifyLumenBundleFromSource(input: LumenVerifyInput & { fetch: typeof fetch }): Promise<LumenVerificationResult> {
   const request = input.fetch;
   const source = ensureTrailingSlash(input.source);
-  const indexBytes = await fetchBytes(request, new URL("index.json", source).toString());
+  const timeoutMs = input.fetchTimeoutMs;
+  const indexBytes = await fetchBytes(request, new URL("index.json", source).toString(), timeoutMs);
   await assertSha256Digest(indexBytes, input.bundleDigest, "index.json");
 
   const index = parseIndex(indexBytes);
   await verifyIndexSignature(index);
 
   const releaseTargetPath = input.releasePath ?? selectOnlyTarget(index.signed.targets, "lumen/static-web-release/1");
-  const releaseBytes = await fetchTarget(request, source, index.signed.targets, releaseTargetPath);
+  const releaseBytes = await fetchTarget(request, source, index.signed.targets, releaseTargetPath, timeoutMs);
   const release = parseRelease(releaseBytes);
 
   const runtimeBytes = input.runtimePath === undefined
     ? undefined
-    : await fetchTarget(request, source, index.signed.targets, input.runtimePath);
+    : await fetchTarget(request, source, index.signed.targets, input.runtimePath, timeoutMs);
 
   const assets = new Map<string, Uint8Array>();
   for (const [path, target] of Object.entries(release.assets)) {
     assertSafeRelativePath(path);
-    const bytes = await fetchBytes(request, new URL(path, source).toString());
+    const bytes = await fetchBytes(request, new URL(path, source).toString(), timeoutMs);
     await assertTargetBytes(bytes, target, path);
     assets.set(path, bytes);
   }
@@ -246,22 +248,32 @@ async function verifyIndexSignature(index: LumenIndexEnvelope): Promise<void> {
   throw new LumenError("INVALID_SIGNATURE", "No valid Lumen Index signature found");
 }
 
-async function fetchTarget(request: typeof fetch, source: string, targets: Record<string, LumenTarget>, path: string): Promise<Uint8Array> {
+async function fetchTarget(request: typeof fetch, source: string, targets: Record<string, LumenTarget>, path: string, timeoutMs: number | undefined): Promise<Uint8Array> {
   assertSafeRelativePath(path);
   const target = targets[path];
   if (target === undefined) throw new LumenError("INVALID_TARGET", `Target is not signed by index: ${path}`);
   assertTargetShape(target, path);
-  const bytes = await fetchBytes(request, new URL(`targets/${path}`, source).toString());
+  const bytes = await fetchBytes(request, new URL(`targets/${path}`, source).toString(), timeoutMs);
   await assertTargetBytes(bytes, target, path);
   return bytes;
 }
 
-async function fetchBytes(request: typeof fetch, url: string): Promise<Uint8Array> {
+async function fetchBytes(request: typeof fetch, url: string, timeoutMs = 5000): Promise<Uint8Array> {
   let response: Response;
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new LumenError("FETCH_FAILED", `Fetch timed out for ${url} after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
   try {
-    response = await request(url);
+    response = await Promise.race([request(url, { signal: controller.signal }), timeoutPromise]);
   } catch (error) {
     throw new LumenError("FETCH_FAILED", `Fetch failed for ${url}: ${messageOf(error)}`);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
   if (!response.ok) throw new LumenError("FETCH_FAILED", `Fetch failed for ${url}: ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());

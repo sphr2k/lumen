@@ -111,6 +111,31 @@ describe("verifyLumenBundle", () => {
     expect(result.release.version).toBe("0.0.1");
   });
 
+  it("times out a hanging gateway before trying the next source", async () => {
+    const data = await fixture();
+    const seen: string[] = [];
+    const fetch = async (input: RequestInfo | URL) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      seen.push(href);
+      const url = new URL(href);
+      if (url.hostname === "dweb.link") return await new Promise<Response>(() => {});
+      const path = url.pathname.replace(/^\/ipfs\/bafyfixture\//, "");
+      const bytes = data.files.get(path);
+      return bytes === undefined ? new Response("not found", { status: 404 }) : new Response(Buffer.from(bytes));
+    };
+
+    const result = await verifyLumenBundle({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      fetch,
+      fetchTimeoutMs: 1
+    });
+
+    expect(result.source).toBe("https://ipfs.io/ipfs/bafyfixture/");
+    expect(seen).toContain("https://ipfs.io/ipfs/bafyfixture/index.json");
+  });
+
   it("rejects an index whose digest does not match the launch link", async () => {
     const data = await fixture();
 
