@@ -150,6 +150,28 @@ describe("verifyLumenBundle", () => {
     expect(seen).toContain("https://gateway.pinata.cloud/ipfs/bafyfixture/assets/app.js");
   });
 
+  it("ignores a fast gateway response whose target digest does not match", async () => {
+    const data = await fixture();
+    const fetch = async (input: RequestInfo | URL) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      const url = new URL(href);
+      const path = url.pathname.replace(/^\/ipfs\/bafyfixture\//, "");
+      if (url.hostname === "dweb.link" && path === "assets/app.js") {
+        return new Response("tampered but fast");
+      }
+      return fileResponse(data.files, path);
+    };
+
+    const result = await verifyLumenBundle({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      fetch
+    });
+
+    expect(new TextDecoder().decode(result.assets.get("assets/app.js"))).toBe("globalThis.lumenSmoke = true;");
+  });
+
   it("times out a hanging gateway before trying the next source", async () => {
     const data = await fixture();
     const seen: string[] = [];

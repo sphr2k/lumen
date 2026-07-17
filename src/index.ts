@@ -84,8 +84,9 @@ async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources:
   const request = input.fetch;
   const sources = input.sources.map(ensureTrailingSlash);
   const timeoutMs = input.fetchTimeoutMs;
-  const indexBytes = await fetchBundlePath(request, sources, "index.json", timeoutMs);
-  await assertSha256Digest(indexBytes, input.bundleDigest, "index.json");
+  const indexBytes = await fetchVerifiedBundlePath(request, sources, "index.json", timeoutMs, async (bytes) => {
+    await assertSha256Digest(bytes, input.bundleDigest, "index.json");
+  });
 
   const index = parseIndex(indexBytes);
   await verifyIndexSignature(index);
@@ -101,8 +102,9 @@ async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources:
   const assets = new Map<string, Uint8Array>();
   for (const [path, target] of Object.entries(release.assets)) {
     assertSafeRelativePath(path);
-    const bytes = await fetchBundlePath(request, sources, path, timeoutMs);
-    await assertTargetBytes(bytes, target, path);
+    const bytes = await fetchVerifiedBundlePath(request, sources, path, timeoutMs, async (bytes) => {
+      await assertTargetBytes(bytes, target, path);
+    });
     assets.set(path, bytes);
   }
 
@@ -266,22 +268,49 @@ async function fetchTarget(request: typeof fetch, sources: readonly string[], ta
   const target = targets[path];
   if (target === undefined) throw new LumenError("INVALID_TARGET", `Target is not signed by index: ${path}`);
   assertTargetShape(target, path);
-  const bytes = await fetchBundlePath(request, sources, `targets/${path}`, timeoutMs);
-  await assertTargetBytes(bytes, target, path);
+  const bytes = await fetchVerifiedBundlePath(request, sources, `targets/${path}`, timeoutMs, async (bytes) => {
+    await assertTargetBytes(bytes, target, path);
+  });
   return bytes;
 }
 
-async function fetchBundlePath(request: typeof fetch, sources: readonly string[], path: string, timeoutMs: number | undefined): Promise<Uint8Array> {
+async function fetchVerifiedBundlePath(
+  request: typeof fetch,
+  sources: readonly string[],
+  path: string,
+  timeoutMs: number | undefined,
+  verifyBytes: (bytes: Uint8Array) => Promise<void>
+): Promise<Uint8Array> {
   const failures: string[] = [];
-  for (const source of sources) {
-    const url = new URL(path, source).toString();
-    try {
-      return await fetchBytes(request, url, timeoutMs);
-    } catch (error) {
-      failures.push(`${url}: ${messageOf(error)}`);
+  const errors: unknown[] = [];
+  return await new Promise((resolve, reject) => {
+    let pending = sources.length;
+    let settled = false;
+    for (const source of sources) {
+      const url = new URL(path, source).toString();
+      void (async () => {
+        try {
+          const bytes = await fetchBytes(request, url, timeoutMs);
+          await verifyBytes(bytes);
+          if (!settled) {
+            settled = true;
+            resolve(bytes);
+          }
+        } catch (error) {
+          errors.push(error);
+          failures.push(`${url}: ${messageOf(error)}`);
+          pending -= 1;
+          if (pending === 0 && !settled) {
+            if (errors.length === 1 && errors[0] instanceof LumenError && errors[0].code !== "FETCH_FAILED") {
+              reject(errors[0]);
+              return;
+            }
+            reject(new LumenError("FETCH_FAILED", `All repository sources failed for ${path}: ${failures.join(" | ")}`));
+          }
+        }
+      })();
     }
-  }
-  throw new LumenError("FETCH_FAILED", `All repository sources failed for ${path}: ${failures.join(" | ")}`);
+  });
 }
 
 async function fetchBytes(request: typeof fetch, url: string, timeoutMs = 5000): Promise<Uint8Array> {
