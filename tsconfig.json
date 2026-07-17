@@ -8,8 +8,8 @@
     "exactOptionalPropertyTypes": true,
     "isolatedModules": true,
     "skipLibCheck": true,
-    "types": ["node", "vitest/globals"],
+    "types": [],
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["src", "test", "apps", "bin"]
+  "include": ["src", "apps/loader/src"]
 }

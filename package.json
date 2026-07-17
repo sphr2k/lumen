@@ -10,7 +10,7 @@
     "build": "vite build --config apps/loader/vite.config.ts && tsc -p tsconfig.build.json",
     "dev": "vite --config apps/loader/vite.config.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "validate": "bun run typecheck && bun run test && bun run build"
   },
   "devDependencies": {

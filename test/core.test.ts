@@ -1,4 +1,5 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { verifyLumenBundle } from "../src/index.js";
 
@@ -134,6 +135,15 @@ describe("verifyLumenBundle", () => {
 
     expect(result.source).toBe("https://ipfs.io/ipfs/bafyfixture/");
     expect(seen).toContain("https://ipfs.io/ipfs/bafyfixture/index.json");
+  });
+
+  it("does not reference Node Buffer in browser-delivered code", async () => {
+    const sources = [
+      await readFile(new URL("../src/index.ts", import.meta.url), "utf8"),
+      await readFile(new URL("../apps/loader/src/main.ts", import.meta.url), "utf8")
+    ].join("\n");
+
+    expect(sources).not.toMatch(/\bBuffer\b/u);
   });
 
   it("rejects an index whose digest does not match the launch link", async () => {

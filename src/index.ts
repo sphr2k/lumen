@@ -232,7 +232,7 @@ async function verifyIndexSignature(index: LumenIndexEnvelope): Promise<void> {
   for (const signature of index.signatures) {
     const notary = index.signed.notaries.find((candidate) => candidate.id === signature.notaryId);
     if (notary === undefined) continue;
-    const publicKeyBytes = Buffer.from(notary.publicKeySpkiBase64, "base64");
+    const publicKeyBytes = base64ToBytes(notary.publicKeySpkiBase64);
     if (await sha256Hex(publicKeyBytes) !== notary.publicKeySpkiSha256) {
       throw new LumenError("INVALID_SIGNATURE", `Notary ${notary.id} public key fingerprint does not match`);
     }
@@ -240,7 +240,7 @@ async function verifyIndexSignature(index: LumenIndexEnvelope): Promise<void> {
     const ok = await crypto.subtle.verify(
       { name: "ECDSA", hash: "SHA-256" },
       publicKey,
-      toArrayBuffer(derEcdsaSignatureToRaw(Buffer.from(signature.signatureBase64, "base64"))),
+      toArrayBuffer(derEcdsaSignatureToRaw(base64ToBytes(signature.signatureBase64))),
       toArrayBuffer(payload)
     );
     if (ok) return;
@@ -333,6 +333,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
