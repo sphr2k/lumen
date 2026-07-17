@@ -77,48 +77,37 @@ const textEncoder = new TextEncoder();
 
 export async function verifyLumenBundle(input: LumenVerifyInput): Promise<LumenVerificationResult> {
   const request = input.fetch ?? fetch;
-  const failures: string[] = [];
-  const errors: unknown[] = [];
-  for (const source of sourceCandidates(input.source)) {
-    try {
-      return await verifyLumenBundleFromSource({ ...input, source, fetch: request });
-    } catch (error) {
-      errors.push(error);
-      failures.push(`${source}: ${messageOf(error)}`);
-    }
-  }
-  if (errors.length === 1 && errors[0] instanceof LumenError && errors[0].code !== "FETCH_FAILED") throw errors[0];
-  throw new LumenError("FETCH_FAILED", `All repository sources failed: ${failures.join(" | ")}`);
+  return await verifyLumenBundleFromSources({ ...input, sources: sourceCandidates(input.source), fetch: request });
 }
 
-async function verifyLumenBundleFromSource(input: LumenVerifyInput & { fetch: typeof fetch }): Promise<LumenVerificationResult> {
+async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources: readonly string[]; fetch: typeof fetch }): Promise<LumenVerificationResult> {
   const request = input.fetch;
-  const source = ensureTrailingSlash(input.source);
+  const sources = input.sources.map(ensureTrailingSlash);
   const timeoutMs = input.fetchTimeoutMs;
-  const indexBytes = await fetchBytes(request, new URL("index.json", source).toString(), timeoutMs);
+  const indexBytes = await fetchBundlePath(request, sources, "index.json", timeoutMs);
   await assertSha256Digest(indexBytes, input.bundleDigest, "index.json");
 
   const index = parseIndex(indexBytes);
   await verifyIndexSignature(index);
 
   const releaseTargetPath = input.releasePath ?? selectOnlyTarget(index.signed.targets, "lumen/static-web-release/1");
-  const releaseBytes = await fetchTarget(request, source, index.signed.targets, releaseTargetPath, timeoutMs);
+  const releaseBytes = await fetchTarget(request, sources, index.signed.targets, releaseTargetPath, timeoutMs);
   const release = parseRelease(releaseBytes);
 
   const runtimeBytes = input.runtimePath === undefined
     ? undefined
-    : await fetchTarget(request, source, index.signed.targets, input.runtimePath, timeoutMs);
+    : await fetchTarget(request, sources, index.signed.targets, input.runtimePath, timeoutMs);
 
   const assets = new Map<string, Uint8Array>();
   for (const [path, target] of Object.entries(release.assets)) {
     assertSafeRelativePath(path);
-    const bytes = await fetchBytes(request, new URL(path, source).toString(), timeoutMs);
+    const bytes = await fetchBundlePath(request, sources, path, timeoutMs);
     await assertTargetBytes(bytes, target, path);
     assets.set(path, bytes);
   }
 
   return {
-    source,
+    source: sources[0] ?? ensureTrailingSlash(input.source),
     generation: index.signed.generation,
     release,
     ...(runtimeBytes === undefined ? {} : { runtimeBytes }),
@@ -207,8 +196,9 @@ function sourceCandidates(source: string): string[] {
   const cid = match[1]!;
   return unique([
     primary,
-    `https://ipfs.io/ipfs/${cid}/`,
     `https://dweb.link/ipfs/${cid}/`,
+    `https://${cid}.ipfs.dweb.link/`,
+    `https://ipfs.io/ipfs/${cid}/`,
     `https://gateway.pinata.cloud/ipfs/${cid}/`,
     `https://w3s.link/ipfs/${cid}/`
   ]);
@@ -271,14 +261,27 @@ async function verifyIndexSignature(index: LumenIndexEnvelope): Promise<void> {
   throw new LumenError("INVALID_SIGNATURE", "No valid Lumen Index signature found");
 }
 
-async function fetchTarget(request: typeof fetch, source: string, targets: Record<string, LumenTarget>, path: string, timeoutMs: number | undefined): Promise<Uint8Array> {
+async function fetchTarget(request: typeof fetch, sources: readonly string[], targets: Record<string, LumenTarget>, path: string, timeoutMs: number | undefined): Promise<Uint8Array> {
   assertSafeRelativePath(path);
   const target = targets[path];
   if (target === undefined) throw new LumenError("INVALID_TARGET", `Target is not signed by index: ${path}`);
   assertTargetShape(target, path);
-  const bytes = await fetchBytes(request, new URL(`targets/${path}`, source).toString(), timeoutMs);
+  const bytes = await fetchBundlePath(request, sources, `targets/${path}`, timeoutMs);
   await assertTargetBytes(bytes, target, path);
   return bytes;
+}
+
+async function fetchBundlePath(request: typeof fetch, sources: readonly string[], path: string, timeoutMs: number | undefined): Promise<Uint8Array> {
+  const failures: string[] = [];
+  for (const source of sources) {
+    const url = new URL(path, source).toString();
+    try {
+      return await fetchBytes(request, url, timeoutMs);
+    } catch (error) {
+      failures.push(`${url}: ${messageOf(error)}`);
+    }
+  }
+  throw new LumenError("FETCH_FAILED", `All repository sources failed for ${path}: ${failures.join(" | ")}`);
 }
 
 async function fetchBytes(request: typeof fetch, url: string, timeoutMs = 5000): Promise<Uint8Array> {

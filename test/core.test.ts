@@ -106,10 +106,48 @@ describe("verifyLumenBundle", () => {
       fetch
     });
 
-    expect(result.source).toBe("https://ipfs.io/ipfs/bafyfixture/");
+    expect(result.source).toBe("https://dweb.link/ipfs/bafyfixture/");
     expect(seen).toContain("https://dweb.link/ipfs/bafyfixture/index.json");
     expect(seen).toContain("https://ipfs.io/ipfs/bafyfixture/index.json");
     expect(result.release.version).toBe("0.0.1");
+  });
+
+  it("can verify one IPFS bundle from different gateways per signed target", async () => {
+    const data = await fixture();
+    const seen: string[] = [];
+    const fetch = async (input: RequestInfo | URL) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      seen.push(href);
+      const url = new URL(href);
+      if (url.hostname === "dweb.link") {
+        if (url.pathname.endsWith("/index.json")) return fileResponse(data.files, "index.json");
+        return new Response("gateway target timeout", { status: 504 });
+      }
+      if (url.hostname === "ipfs.io") {
+        if (url.pathname.endsWith("/targets/releases/0.0.1/manifest.json")) return fileResponse(data.files, "targets/releases/0.0.1/manifest.json");
+        return new Response("gateway target timeout", { status: 504 });
+      }
+      if (url.hostname === "gateway.pinata.cloud") {
+        const path = url.pathname.replace(/^\/ipfs\/bafyfixture\//, "");
+        return fileResponse(data.files, path);
+      }
+      return new Response("not ready", { status: 504 });
+    };
+
+    const result = await verifyLumenBundle({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      runtimePath: "runtime/example.json",
+      fetch
+    });
+
+    expect(result.release.version).toBe("0.0.1");
+    expect(result.runtimeBytes).toEqual(data.files.get("targets/runtime/example.json"));
+    expect(seen).toContain("https://dweb.link/ipfs/bafyfixture/index.json");
+    expect(seen).toContain("https://ipfs.io/ipfs/bafyfixture/targets/releases/0.0.1/manifest.json");
+    expect(seen).toContain("https://gateway.pinata.cloud/ipfs/bafyfixture/targets/runtime/example.json");
+    expect(seen).toContain("https://gateway.pinata.cloud/ipfs/bafyfixture/assets/app.js");
   });
 
   it("times out a hanging gateway before trying the next source", async () => {
@@ -133,7 +171,7 @@ describe("verifyLumenBundle", () => {
       fetchTimeoutMs: 1
     });
 
-    expect(result.source).toBe("https://ipfs.io/ipfs/bafyfixture/");
+    expect(result.source).toBe("https://dweb.link/ipfs/bafyfixture/");
     expect(seen).toContain("https://ipfs.io/ipfs/bafyfixture/index.json");
   });
 
@@ -169,6 +207,11 @@ describe("verifyLumenBundle", () => {
     })).rejects.toMatchObject({ code: "DIGEST_MISMATCH" });
   });
 });
+
+function fileResponse(files: ReadonlyMap<string, Uint8Array>, path: string): Response {
+  const bytes = files.get(path);
+  return bytes === undefined ? new Response("not found", { status: 404 }) : new Response(new Uint8Array(bytes));
+}
 
 describe("buildLumenLaunchAssetUrl", () => {
   it("launches dweb IPFS path sources on the raw dweb subdomain gateway", () => {
