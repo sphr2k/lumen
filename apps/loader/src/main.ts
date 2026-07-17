@@ -36,7 +36,7 @@ async function verify(shouldLaunch: boolean): Promise<void> {
       release: result.release.version,
       assets: [...result.assets.keys()]
     }, null, 2);
-    if (shouldLaunch) launchVerifiedAsset(result.release.entrypoint);
+    if (shouldLaunch) launchVerifiedAsset(result.source, result.release.entrypoint);
   } catch (error) {
     ui.output.textContent = JSON.stringify({
       state: "failed",
@@ -68,8 +68,8 @@ function readForm(): LumenVerifyInput {
   };
 }
 
-function launchVerifiedAsset(path: string): void {
-  const base = new URL(ui.source.value.endsWith("/") ? ui.source.value : `${ui.source.value}/`);
+function launchVerifiedAsset(source: string, path: string): void {
+  const base = new URL(source.endsWith("/") ? source : `${source}/`);
   const url = new URL(path, base);
   location.assign(url.toString());
 }

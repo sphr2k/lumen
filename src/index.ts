@@ -1,4 +1,5 @@
 export type LumenVerificationResult = Readonly<{
+  source: string;
   generation: number;
   release: LumenStaticWebRelease;
   runtimeBytes?: Uint8Array;
@@ -75,6 +76,22 @@ const textEncoder = new TextEncoder();
 
 export async function verifyLumenBundle(input: LumenVerifyInput): Promise<LumenVerificationResult> {
   const request = input.fetch ?? fetch;
+  const failures: string[] = [];
+  const errors: unknown[] = [];
+  for (const source of sourceCandidates(input.source)) {
+    try {
+      return await verifyLumenBundleFromSource({ ...input, source, fetch: request });
+    } catch (error) {
+      errors.push(error);
+      failures.push(`${source}: ${messageOf(error)}`);
+    }
+  }
+  if (errors.length === 1 && errors[0] instanceof LumenError && errors[0].code !== "FETCH_FAILED") throw errors[0];
+  throw new LumenError("FETCH_FAILED", `All repository sources failed: ${failures.join(" | ")}`);
+}
+
+async function verifyLumenBundleFromSource(input: LumenVerifyInput & { fetch: typeof fetch }): Promise<LumenVerificationResult> {
+  const request = input.fetch;
   const source = ensureTrailingSlash(input.source);
   const indexBytes = await fetchBytes(request, new URL("index.json", source).toString());
   await assertSha256Digest(indexBytes, input.bundleDigest, "index.json");
@@ -99,6 +116,7 @@ export async function verifyLumenBundle(input: LumenVerifyInput): Promise<LumenV
   }
 
   return {
+    source,
     generation: index.signed.generation,
     release,
     ...(runtimeBytes === undefined ? {} : { runtimeBytes }),
@@ -149,6 +167,30 @@ export function buildLumenLaunchUrl(input: {
 function optionalParam(params: URLSearchParams, name: string): string | undefined {
   const value = params.get(name);
   return value === null || value === "" ? undefined : value;
+}
+
+function sourceCandidates(source: string): string[] {
+  const primary = ensureTrailingSlash(source);
+  let url: URL;
+  try {
+    url = new URL(primary);
+  } catch {
+    return [primary];
+  }
+  const match = /^\/ipfs\/([^/]+)\/?$/u.exec(url.pathname);
+  if (match === null) return [primary];
+  const cid = match[1]!;
+  return unique([
+    primary,
+    `https://ipfs.io/ipfs/${cid}/`,
+    `https://dweb.link/ipfs/${cid}/`,
+    `https://gateway.pinata.cloud/ipfs/${cid}/`,
+    `https://w3s.link/ipfs/${cid}/`
+  ]);
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
 
 function parseIndex(bytes: Uint8Array): LumenIndexEnvelope {
