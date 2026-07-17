@@ -1,4 +1,4 @@
-import { parseLumenLaunchUrl, verifyLumenBundle, type LumenVerifyInput } from "../../../src/index.js";
+import { buildLumenLaunchAssetUrl, parseLumenLaunchUrl, verifyLumenBundle, type LumenVerifyInput } from "../../../src/index.js";
 import "./style.css";
 
 const form = document.querySelector<HTMLFormElement>("#verify-form");
@@ -69,7 +69,5 @@ function readForm(): LumenVerifyInput {
 }
 
 function launchVerifiedAsset(source: string, path: string): void {
-  const base = new URL(source.endsWith("/") ? source : `${source}/`);
-  const url = new URL(path, base);
-  location.assign(url.toString());
+  location.assign(buildLumenLaunchAssetUrl(source, path));
 }

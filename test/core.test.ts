@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { verifyLumenBundle } from "../src/index.js";
+import { buildLumenLaunchAssetUrl, verifyLumenBundle } from "../src/index.js";
 
 const encoder = new TextEncoder();
 
@@ -167,5 +167,28 @@ describe("verifyLumenBundle", () => {
       releasePath: "releases/0.0.1/manifest.json",
       fetch: data.fetch
     })).rejects.toMatchObject({ code: "DIGEST_MISMATCH" });
+  });
+});
+
+describe("buildLumenLaunchAssetUrl", () => {
+  it("launches dweb IPFS path sources on the raw dweb subdomain gateway", () => {
+    expect(buildLumenLaunchAssetUrl(
+      "https://dweb.link/ipfs/bafyfixture/",
+      "index.html"
+    )).toBe("https://bafyfixture.ipfs.dweb.link/index.html");
+  });
+
+  it("does not launch web apps on the in-browser IPFS service-worker gateway", () => {
+    expect(buildLumenLaunchAssetUrl(
+      "https://bafyfixture.ipfs.inbrowser.link/",
+      "index.html"
+    )).toBe("https://bafyfixture.ipfs.dweb.link/index.html");
+  });
+
+  it("keeps ordinary HTTPS sources unchanged", () => {
+    expect(buildLumenLaunchAssetUrl(
+      "https://example.test/bundle/",
+      "index.html"
+    )).toBe("https://example.test/bundle/index.html");
   });
 });

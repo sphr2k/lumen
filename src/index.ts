@@ -166,6 +166,29 @@ export function buildLumenLaunchUrl(input: {
   return url.toString();
 }
 
+export function buildLumenLaunchAssetUrl(source: string, path: string): string {
+  assertSafeRelativePath(path);
+  const baseSource = ensureTrailingSlash(source);
+  let parsed: URL;
+  try {
+    parsed = new URL(baseSource);
+  } catch {
+    return new URL(path, baseSource).toString();
+  }
+
+  const pathGatewayMatch = /^\/ipfs\/([^/]+)\/?$/u.exec(parsed.pathname);
+  if (parsed.hostname === "dweb.link" && pathGatewayMatch !== null) {
+    return new URL(path, `https://${pathGatewayMatch[1]}.ipfs.dweb.link/`).toString();
+  }
+
+  const inBrowserMatch = /^(.+)\.ipfs\.inbrowser\.link$/u.exec(parsed.hostname);
+  if (inBrowserMatch !== null) {
+    return new URL(path, `https://${inBrowserMatch[1]}.ipfs.dweb.link/`).toString();
+  }
+
+  return new URL(path, baseSource).toString();
+}
+
 function optionalParam(params: URLSearchParams, name: string): string | undefined {
   const value = params.get(name);
   return value === null || value === "" ? undefined : value;
