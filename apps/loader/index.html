@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lumen Verified Launch</title>
+    <script type="module" src="./src/main.ts"></script>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <p class="eyebrow">Lumen</p>
+        <h1>Verified Launch</h1>
+        <p class="copy">Lumen verifies a hash-pinned bundle before loading its static client bytes.</p>
+        <form id="verify-form">
+          <label>
+            Source URL
+            <input id="source" name="source" placeholder="https://gateway.example/ipfs/bafy.../" />
+          </label>
+          <label>
+            Bundle digest
+            <input id="bundleDigest" name="bundleDigest" placeholder="sha256:..." />
+          </label>
+          <label>
+            Release manifest path
+            <input id="releasePath" name="releasePath" placeholder="releases/1.0.0/manifest.json" />
+          </label>
+          <label>
+            Runtime path
+            <input id="runtimePath" name="runtimePath" placeholder="runtime/reference.json" />
+          </label>
+          <div class="actions">
+            <button type="submit">Verify</button>
+            <button id="launch" type="button">Verify and launch</button>
+          </div>
+        </form>
+      </section>
+      <pre id="output">Waiting for a Lumen Link...</pre>
+    </main>
+  </body>
+</html>
