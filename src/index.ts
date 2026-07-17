@@ -313,7 +313,7 @@ async function fetchVerifiedBundlePath(
   });
 }
 
-async function fetchBytes(request: typeof fetch, url: string, timeoutMs = 5000): Promise<Uint8Array> {
+async function fetchBytes(request: typeof fetch, url: string, timeoutMs = 15_000): Promise<Uint8Array> {
   let response: Response;
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
