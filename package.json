@@ -6,6 +6,9 @@
   "bin": {
     "lumen": "./bin/lumen.ts"
   },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "build": "vite build --config apps/loader/vite.config.ts && tsc -p tsconfig.build.json",
     "dev": "vite --config apps/loader/vite.config.ts",
