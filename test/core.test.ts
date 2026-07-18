@@ -150,6 +150,78 @@ describe("verifyLumenBundle", () => {
     expect(seen).toContain("https://gateway.pinata.cloud/ipfs/bafyfixture/assets/app.js");
   });
 
+  it("selects a launch source that can serve every release asset", async () => {
+    const data = await fixture();
+    const seen: string[] = [];
+    const fetch = async (input: RequestInfo | URL) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      seen.push(href);
+      const url = new URL(href);
+      const path = fixtureGatewayPath(url);
+      if (url.hostname === "dweb.link" && path === "assets/app.js") {
+        return new Response("gateway target timeout", { status: 504 });
+      }
+      return fileResponse(data.files, path);
+    };
+
+    const result = await verifyLumenBundle({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      fetch,
+      requireLaunchSource: true
+    });
+
+    expect(result.source).toBe("https://bafyfixture.ipfs.dweb.link/");
+    expect(seen).toContain("https://dweb.link/ipfs/bafyfixture/assets/app.js");
+    expect(seen).toContain("https://bafyfixture.ipfs.dweb.link/assets/app.js");
+  });
+
+  it("refuses to launch when no single gateway can serve the whole app", async () => {
+    const data = await fixture();
+    const fetch = async (input: RequestInfo | URL) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      const url = new URL(href);
+      const path = fixtureGatewayPath(url);
+      if (path === "index.json" || path === "targets/releases/0.0.1/manifest.json") {
+        return fileResponse(data.files, path);
+      }
+      if (path === "index.html" && (url.hostname === "dweb.link" || url.hostname === "ipfs.io" || url.hostname === "gateway.pinata.cloud")) {
+        return fileResponse(data.files, path);
+      }
+      if (path === "assets/app.js" && (url.hostname === "bafyfixture.ipfs.dweb.link" || url.hostname === "w3s.link")) {
+        return fileResponse(data.files, path);
+      }
+      return new Response("not available on this gateway", { status: 504 });
+    };
+
+    await expect(verifyLumenBundle({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      fetch,
+      requireLaunchSource: true
+    })).rejects.toMatchObject({ code: "LAUNCH_UNAVAILABLE" });
+  });
+
+  it("emits fetch progress for diagnostics", async () => {
+    const data = await fixture();
+    const events: string[] = [];
+
+    await verifyLumenBundle({
+      source: "https://example.test/bundle/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      fetch: data.fetch,
+      onProgress: (event) => events.push(`${event.state}:${event.path}`)
+    });
+
+    expect(events).toContain("fetching:index.json");
+    expect(events).toContain("verified:index.json");
+    expect(events).toContain("verified:index.html");
+    expect(events).toContain("verified:assets/app.js");
+  });
+
   it("ignores a fast gateway response whose target digest does not match", async () => {
     const data = await fixture();
     const fetch = async (input: RequestInfo | URL) => {
@@ -233,6 +305,10 @@ describe("verifyLumenBundle", () => {
 function fileResponse(files: ReadonlyMap<string, Uint8Array>, path: string): Response {
   const bytes = files.get(path);
   return bytes === undefined ? new Response("not found", { status: 404 }) : new Response(new Uint8Array(bytes));
+}
+
+function fixtureGatewayPath(url: URL): string {
+  return url.pathname.replace(/^\/ipfs\/bafyfixture\//, "").replace(/^\//u, "");
 }
 
 describe("Lumen launch links", () => {

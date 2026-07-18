@@ -18,6 +18,8 @@
         <p id="status-message" class="copy">Lumen is checking the signed bundle before the app opens.</p>
         <p id="status-meta" class="meta">No app bytes are loaded until the bundle digest and release asset hashes match.</p>
         <div class="actions">
+          <button id="launch" type="button" hidden>Verify and launch</button>
+          <button id="verify" type="button" hidden>Verify only</button>
           <button id="retry" type="button" hidden>Retry</button>
         </div>
         <details id="details" class="details">
@@ -39,11 +41,8 @@
               Runtime path
               <input id="runtimePath" name="runtimePath" placeholder="runtime/reference.json" />
             </label>
-            <div class="debug-actions">
-              <button type="submit">Verify only</button>
-              <button id="launch" type="button">Verify and launch</button>
-            </div>
           </form>
+          <ol id="timeline" class="timeline" aria-live="polite"></ol>
           <pre id="output">Waiting for a Lumen link...</pre>
         </details>
       </section>

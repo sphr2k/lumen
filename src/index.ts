@@ -6,6 +6,15 @@ export type LumenVerificationResult = Readonly<{
   assets: ReadonlyMap<string, Uint8Array>;
 }>;
 
+export type LumenProgressEvent = Readonly<{
+  state: "fetching" | "verified" | "failed";
+  path: string;
+  source: string;
+  url: string;
+  elapsedMs?: number;
+  message?: string;
+}>;
+
 export type LumenVerifyInput = Readonly<{
   source: string;
   bundleDigest: string;
@@ -13,6 +22,8 @@ export type LumenVerifyInput = Readonly<{
   runtimePath?: string;
   fetchTimeoutMs?: number;
   fetch?: typeof fetch;
+  requireLaunchSource?: boolean;
+  onProgress?: (event: LumenProgressEvent) => void;
 }>;
 
 export class LumenError extends Error {
@@ -24,7 +35,8 @@ export class LumenError extends Error {
       | "INVALID_INDEX"
       | "INVALID_SIGNATURE"
       | "INVALID_TARGET"
-      | "INVALID_RELEASE",
+      | "INVALID_RELEASE"
+      | "LAUNCH_UNAVAILABLE",
     message: string
   ) {
     super(message);
@@ -93,7 +105,7 @@ async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources:
   const request = input.fetch;
   const sources = input.sources.map(ensureTrailingSlash);
   const timeoutMs = input.fetchTimeoutMs;
-  const indexBytes = await fetchVerifiedBundlePath(request, sources, "index.json", timeoutMs, async (bytes) => {
+  const indexBytes = await fetchVerifiedBundlePath(request, sources, "index.json", timeoutMs, input.onProgress, async (bytes) => {
     await assertSha256Digest(bytes, input.bundleDigest, "index.json");
   });
 
@@ -111,14 +123,18 @@ async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources:
   const assets = new Map<string, Uint8Array>();
   for (const [path, target] of Object.entries(release.assets)) {
     assertSafeRelativePath(path);
-    const bytes = await fetchVerifiedBundlePath(request, sources, path, timeoutMs, async (bytes) => {
+    const bytes = await fetchVerifiedBundlePath(request, sources, path, timeoutMs, input.onProgress, async (bytes) => {
       await assertTargetBytes(bytes, target, path);
     });
     assets.set(path, bytes);
   }
 
+  const launchSource = input.requireLaunchSource === true
+    ? await selectLaunchSource(request, sources, release.assets, timeoutMs, input.onProgress)
+    : undefined;
+
   return {
-    source: sources[0] ?? ensureTrailingSlash(input.source),
+    source: launchSource ?? sources[0] ?? ensureTrailingSlash(input.source),
     generation: index.signed.generation,
     release,
     ...(runtimeBytes === undefined ? {} : { runtimeBytes }),
@@ -321,7 +337,7 @@ async function fetchTarget(request: typeof fetch, sources: readonly string[], ta
   const target = targets[path];
   if (target === undefined) throw new LumenError("INVALID_TARGET", `Target is not signed by index: ${path}`);
   assertTargetShape(target, path);
-  const bytes = await fetchVerifiedBundlePath(request, sources, `targets/${path}`, timeoutMs, async (bytes) => {
+  const bytes = await fetchVerifiedBundlePath(request, sources, `targets/${path}`, timeoutMs, undefined, async (bytes) => {
     await assertTargetBytes(bytes, target, path);
   });
   return bytes;
@@ -332,6 +348,7 @@ async function fetchVerifiedBundlePath(
   sources: readonly string[],
   path: string,
   timeoutMs: number | undefined,
+  onProgress: ((event: LumenProgressEvent) => void) | undefined,
   verifyBytes: (bytes: Uint8Array) => Promise<void>
 ): Promise<Uint8Array> {
   const failures: string[] = [];
@@ -342,14 +359,19 @@ async function fetchVerifiedBundlePath(
     for (const source of sources) {
       const url = new URL(path, source).toString();
       void (async () => {
+        const started = performanceNow();
+        onProgress?.({ state: "fetching", path, source, url });
         try {
           const bytes = await fetchBytes(request, url, timeoutMs);
+          if (settled) return;
           await verifyBytes(bytes);
-          if (!settled) {
-            settled = true;
-            resolve(bytes);
-          }
+          if (settled) return;
+          onProgress?.({ state: "verified", path, source, url, elapsedMs: Math.round(performanceNow() - started) });
+          settled = true;
+          resolve(bytes);
         } catch (error) {
+          if (settled) return;
+          onProgress?.({ state: "failed", path, source, url, elapsedMs: Math.round(performanceNow() - started), message: messageOf(error) });
           errors.push(error);
           failures.push(`${url}: ${messageOf(error)}`);
           pending -= 1;
@@ -366,12 +388,44 @@ async function fetchVerifiedBundlePath(
   });
 }
 
+async function selectLaunchSource(
+  request: typeof fetch,
+  sources: readonly string[],
+  assets: Record<string, LumenTarget>,
+  timeoutMs: number | undefined,
+  onProgress: ((event: LumenProgressEvent) => void) | undefined
+): Promise<string> {
+  const failures: string[] = [];
+  for (const source of sources) {
+    const checked = await Promise.all(Object.entries(assets).map(async ([path, target]) => {
+      const url = new URL(path, source).toString();
+      const started = performanceNow();
+      onProgress?.({ state: "fetching", path: `launch:${path}`, source, url });
+      try {
+        const bytes = await fetchBytes(request, url, timeoutMs);
+        await assertTargetBytes(bytes, target, path);
+        onProgress?.({ state: "verified", path: `launch:${path}`, source, url, elapsedMs: Math.round(performanceNow() - started) });
+        return true;
+      } catch (error) {
+        const message = messageOf(error);
+        failures.push(`${url}: ${message}`);
+        onProgress?.({ state: "failed", path: `launch:${path}`, source, url, elapsedMs: Math.round(performanceNow() - started), message });
+        return false;
+      }
+    }));
+    if (checked.every(Boolean)) return source;
+  }
+  throw new LumenError("LAUNCH_UNAVAILABLE", `Verified bundle bytes, but no single gateway can serve every launch asset: ${failures.join(" | ")}`);
+}
+
 async function fetchBytes(request: typeof fetch, url: string, timeoutMs = 15_000): Promise<Uint8Array> {
   let response: Response;
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
+      timedOut = true;
       controller.abort();
       reject(new LumenError("FETCH_FAILED", `Fetch timed out for ${url} after ${timeoutMs}ms`));
     }, timeoutMs);
@@ -379,6 +433,7 @@ async function fetchBytes(request: typeof fetch, url: string, timeoutMs = 15_000
   try {
     response = await Promise.race([request(url, { signal: controller.signal }), timeoutPromise]);
   } catch (error) {
+    if (timedOut) throw new LumenError("FETCH_FAILED", `Fetch timed out for ${url} after ${timeoutMs}ms`);
     throw new LumenError("FETCH_FAILED", `Fetch failed for ${url}: ${messageOf(error)}`);
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
@@ -441,6 +496,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function performanceNow(): number {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
 }
 
 function base64ToBytes(value: string): Uint8Array {

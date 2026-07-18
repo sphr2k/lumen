@@ -135,8 +135,7 @@ h1 {
   line-height: 1.5;
 }
 
-.actions,
-.debug-actions {
+.actions {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
@@ -215,6 +214,39 @@ input {
 input:focus {
   border-color: #1f5fb7;
   outline: 3px solid rgb(31 95 183 / 16%);
+}
+
+.timeline {
+  display: grid;
+  max-height: 220px;
+  gap: 8px;
+  overflow: auto;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.timeline li {
+  overflow-wrap: anywhere;
+  border: 1px solid #d7deea;
+  border-radius: 6px;
+  background: #f7f9fc;
+  color: #435066;
+  font-size: 13px;
+  line-height: 1.35;
+  padding: 9px 10px;
+}
+
+.timeline li[data-state="verified"] {
+  border-color: #bfe7cd;
+  background: #effaf3;
+  color: #166239;
+}
+
+.timeline li[data-state="failed"] {
+  border-color: #f3c5c5;
+  background: #fff3f3;
+  color: #9a1c24;
 }
 
 pre {
