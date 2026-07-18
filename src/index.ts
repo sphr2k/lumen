@@ -72,6 +72,15 @@ type LumenStaticWebRelease = Readonly<{
   assets: Record<string, LumenTarget>;
 }>;
 
+type LumenLaunchPayload = Readonly<{
+  v: 1;
+  s?: string;
+  c?: string;
+  d: string;
+  r?: string;
+  u?: string;
+}>;
+
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
 
@@ -120,16 +129,19 @@ async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources:
 export function parseLumenLaunchUrl(url: string): LumenVerifyInput {
   const parsed = new URL(url);
   const params = new URLSearchParams(parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash);
-  const bundleDigest = params.get("bundleDigest");
-  if (bundleDigest === null) throw new LumenError("BAD_INPUT", "Launch URL is missing bundleDigest");
+  const packed = params.get("l");
+  if (packed !== null) return unpackLaunchPayload(packed);
+
+  const bundleDigest = params.get("digest") ?? params.get("bundleDigest");
+  if (bundleDigest === null) throw new LumenError("BAD_INPUT", "Launch URL is missing digest");
 
   const source = params.get("source");
-  const ipfs = params.get("ipfs");
+  const ipfs = params.get("cid") ?? params.get("ipfs");
   const resolvedSource = source ?? (ipfs === null ? undefined : `https://dweb.link/ipfs/${ipfs}/`);
-  if (resolvedSource === undefined) throw new LumenError("BAD_INPUT", "Launch URL is missing source or ipfs");
+  if (resolvedSource === undefined) throw new LumenError("BAD_INPUT", "Launch URL is missing source or cid");
 
-  const releasePath = optionalParam(params, "releasePath");
-  const runtimePath = optionalParam(params, "runtimePath");
+  const releasePath = optionalParam(params, "release") ?? optionalParam(params, "releasePath");
+  const runtimePath = optionalParam(params, "runtime") ?? optionalParam(params, "runtimePath");
   return {
     source: resolvedSource,
     bundleDigest,
@@ -145,14 +157,26 @@ export function buildLumenLaunchUrl(input: {
   bundleDigest: string;
   releasePath?: string;
   runtimePath?: string;
+  format?: "compact" | "debug";
 }): string {
   const url = new URL(input.launcherUrl);
   const params = new URLSearchParams();
-  if (input.source !== undefined) params.set("source", input.source);
-  if (input.ipfs !== undefined) params.set("ipfs", input.ipfs);
-  params.set("bundleDigest", input.bundleDigest);
-  if (input.releasePath !== undefined) params.set("releasePath", input.releasePath);
-  if (input.runtimePath !== undefined) params.set("runtimePath", input.runtimePath);
+  if (input.format === "debug") {
+    if (input.source !== undefined) params.set("source", input.source);
+    if (input.ipfs !== undefined) params.set("cid", input.ipfs);
+    params.set("digest", input.bundleDigest);
+    if (input.releasePath !== undefined) params.set("release", input.releasePath);
+    if (input.runtimePath !== undefined) params.set("runtime", input.runtimePath);
+  } else {
+    params.set("l", packLaunchPayload({
+      v: 1,
+      ...(input.source === undefined ? {} : { s: input.source }),
+      ...(input.ipfs === undefined ? {} : { c: input.ipfs }),
+      d: input.bundleDigest,
+      ...(input.releasePath === undefined ? {} : { r: input.releasePath }),
+      ...(input.runtimePath === undefined ? {} : { u: input.runtimePath })
+    }));
+  }
   url.hash = params.toString();
   return url.toString();
 }
@@ -183,6 +207,35 @@ export function buildLumenLaunchAssetUrl(source: string, path: string): string {
 function optionalParam(params: URLSearchParams, name: string): string | undefined {
   const value = params.get(name);
   return value === null || value === "" ? undefined : value;
+}
+
+function packLaunchPayload(payload: LumenLaunchPayload): string {
+  return `v1.${bytesToBase64Url(textEncoder.encode(canonicalJson(payload)))}`;
+}
+
+function unpackLaunchPayload(value: string): LumenVerifyInput {
+  if (!value.startsWith("v1.")) throw new LumenError("BAD_INPUT", "Unsupported Lumen launch payload version");
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(textDecoder.decode(base64UrlToBytes(value.slice(3)))) as unknown;
+  } catch {
+    throw new LumenError("BAD_INPUT", "Lumen launch payload is not valid base64url JSON");
+  }
+  if (!isRecord(decoded) || decoded.v !== 1 || typeof decoded.d !== "string") {
+    throw new LumenError("BAD_INPUT", "Lumen launch payload is invalid");
+  }
+  const source = typeof decoded.s === "string" ? decoded.s : undefined;
+  const cid = typeof decoded.c === "string" ? decoded.c : undefined;
+  const resolvedSource = source ?? (cid === undefined ? undefined : `https://dweb.link/ipfs/${cid}/`);
+  if (resolvedSource === undefined) throw new LumenError("BAD_INPUT", "Lumen launch payload is missing source or cid");
+  const releasePath = typeof decoded.r === "string" && decoded.r !== "" ? decoded.r : undefined;
+  const runtimePath = typeof decoded.u === "string" && decoded.u !== "" ? decoded.u : undefined;
+  return {
+    source: resolvedSource,
+    bundleDigest: decoded.d,
+    ...(releasePath === undefined ? {} : { releasePath }),
+    ...(runtimePath === undefined ? {} : { runtimePath })
+  };
 }
 
 function sourceCandidates(source: string): string[] {
@@ -397,6 +450,17 @@ function base64ToBytes(value: string): Uint8Array {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function base64UrlToBytes(value: string): Uint8Array {
+  const padded = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  return base64ToBytes(padded);
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {

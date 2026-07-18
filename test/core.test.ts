@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { buildLumenLaunchAssetUrl, verifyLumenBundle } from "../src/index.js";
+import { buildLumenLaunchAssetUrl, buildLumenLaunchUrl, parseLumenLaunchUrl, verifyLumenBundle } from "../src/index.js";
 
 const encoder = new TextEncoder();
 
@@ -234,6 +234,54 @@ function fileResponse(files: ReadonlyMap<string, Uint8Array>, path: string): Res
   const bytes = files.get(path);
   return bytes === undefined ? new Response("not found", { status: 404 }) : new Response(new Uint8Array(bytes));
 }
+
+describe("Lumen launch links", () => {
+  it("builds compact production launch links by default", () => {
+    const url = buildLumenLaunchUrl({
+      launcherUrl: "https://lumen.example/",
+      ipfs: "bafyfixture",
+      bundleDigest: "sha256:abc",
+      releasePath: "releases/app.json",
+      runtimePath: "runtime/app.json"
+    });
+
+    expect(url).toMatch(/^https:\/\/lumen\.example\/#l=v1\.[A-Za-z0-9_-]+$/u);
+    expect(parseLumenLaunchUrl(url)).toEqual({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: "sha256:abc",
+      releasePath: "releases/app.json",
+      runtimePath: "runtime/app.json"
+    });
+  });
+
+  it("can still build and parse readable debug launch links", () => {
+    const url = buildLumenLaunchUrl({
+      launcherUrl: "https://lumen.example/",
+      ipfs: "bafyfixture",
+      bundleDigest: "sha256:abc",
+      releasePath: "releases/app.json",
+      runtimePath: "runtime/app.json",
+      format: "debug"
+    });
+
+    expect(url).toBe("https://lumen.example/#cid=bafyfixture&digest=sha256%3Aabc&release=releases%2Fapp.json&runtime=runtime%2Fapp.json");
+    expect(parseLumenLaunchUrl(url)).toEqual({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: "sha256:abc",
+      releasePath: "releases/app.json",
+      runtimePath: "runtime/app.json"
+    });
+  });
+
+  it("keeps parsing the original expanded launch parameters", () => {
+    expect(parseLumenLaunchUrl("https://lumen.example/#ipfs=bafyfixture&bundleDigest=sha256:abc&releasePath=releases/app.json&runtimePath=runtime/app.json")).toEqual({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: "sha256:abc",
+      releasePath: "releases/app.json",
+      runtimePath: "runtime/app.json"
+    });
+  });
+});
 
 describe("buildLumenLaunchAssetUrl", () => {
   it("launches dweb IPFS path sources on the raw dweb subdomain gateway", () => {

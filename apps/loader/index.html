@@ -9,33 +9,44 @@
   <body>
     <main>
       <section class="panel">
-        <p class="eyebrow">Lumen</p>
-        <h1>Verified Launch</h1>
-        <p class="copy">Lumen verifies a hash-pinned bundle before loading its static client bytes.</p>
-        <form id="verify-form">
-          <label>
-            Source URL
-            <input id="source" name="source" placeholder="https://gateway.example/ipfs/bafy.../" />
-          </label>
-          <label>
-            Bundle digest
-            <input id="bundleDigest" name="bundleDigest" placeholder="sha256:..." />
-          </label>
-          <label>
-            Release manifest path
-            <input id="releasePath" name="releasePath" placeholder="releases/1.0.0/manifest.json" />
-          </label>
-          <label>
-            Runtime path
-            <input id="runtimePath" name="runtimePath" placeholder="runtime/reference.json" />
-          </label>
-          <div class="actions">
-            <button type="submit">Verify</button>
-            <button id="launch" type="button">Verify and launch</button>
-          </div>
-        </form>
+        <div class="brand">
+          <span class="mark" aria-hidden="true"></span>
+          <span class="eyebrow">Lumen</span>
+        </div>
+        <div id="status-icon" class="status-icon" aria-hidden="true"></div>
+        <h1 id="status-title">Preparing verified launch</h1>
+        <p id="status-message" class="copy">Lumen is checking the signed bundle before the app opens.</p>
+        <p id="status-meta" class="meta">No app bytes are loaded until the bundle digest and release asset hashes match.</p>
+        <div class="actions">
+          <button id="retry" type="button" hidden>Retry</button>
+        </div>
+        <details id="details" class="details">
+          <summary>Advanced verification details</summary>
+          <form id="verify-form">
+            <label>
+              Source URL
+              <input id="source" name="source" placeholder="https://gateway.example/ipfs/bafy.../" />
+            </label>
+            <label>
+              Bundle digest
+              <input id="bundleDigest" name="bundleDigest" placeholder="sha256:..." />
+            </label>
+            <label>
+              Release manifest path
+              <input id="releasePath" name="releasePath" placeholder="releases/1.0.0/manifest.json" />
+            </label>
+            <label>
+              Runtime path
+              <input id="runtimePath" name="runtimePath" placeholder="runtime/reference.json" />
+            </label>
+            <div class="debug-actions">
+              <button type="submit">Verify only</button>
+              <button id="launch" type="button">Verify and launch</button>
+            </div>
+          </form>
+          <pre id="output">Waiting for a Lumen link...</pre>
+        </details>
       </section>
-      <pre id="output">Waiting for a Lumen Link...</pre>
     </main>
   </body>
 </html>

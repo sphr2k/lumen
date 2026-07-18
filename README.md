@@ -20,6 +20,23 @@ bun run build
 bun run validate
 ```
 
+## Links
+
+Production links use a compact versioned launch payload:
+
+```text
+https://launcher.example/#l=v1.<base64url-json>
+```
+
+Readable debug links remain supported for diagnostics:
+
+```text
+https://launcher.example/#cid=bafy...&digest=sha256:...&release=releases/app/manifest.json&runtime=runtime/app.json
+```
+
+The expanded legacy names `source`, `ipfs`, `bundleDigest`, `releasePath`, and
+`runtimePath` are also accepted.
+
 ## CLI
 
 ```bash
