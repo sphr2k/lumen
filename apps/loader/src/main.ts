@@ -95,6 +95,10 @@ async function verify(shouldLaunch: boolean): Promise<void> {
     const code = error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "INTERNAL_ERROR";
     if (code === "LAUNCH_UNAVAILABLE") {
       setStatus("failed", "Verified, not launchable yet", "The signed bytes checked out, but no single gateway could serve the whole app for launch.", "Retry after the IPFS gateways have caught up, or publish through a pinned gateway.");
+    } else if (code === "FETCH_FAILED" && error instanceof Error && error.message.includes("All repository sources failed for index.json")) {
+      setStatus("failed", "Bundle not available yet", "No public gateway could fetch the signed bundle index for this CID.", "Retry after IPFS propagation, or publish through a pinned gateway.");
+    } else if (code === "FETCH_FAILED") {
+      setStatus("failed", "Bundle retrieval failed", "Lumen could not fetch every signed file needed to verify this app.", "Open Advanced details for the exact failing gateway request.");
     } else {
       setStatus("failed", "Verification failed", "The app was not opened because Lumen could not verify every required byte.", "Open Advanced details for the exact failing request.");
     }
