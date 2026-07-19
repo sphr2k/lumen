@@ -163,14 +163,9 @@ function isChannelInput(value: LumenInput): value is Exclude<LumenInput, LumenVe
 }
 
 function launchVerifiedDocument(html: string): void {
-  const parsed = new DOMParser().parseFromString(html, "text/html");
-  document.documentElement.replaceWith(document.importNode(parsed.documentElement, true));
-  for (const inertScript of Array.from(document.scripts)) {
-    const script = document.createElement("script");
-    for (const attribute of Array.from(inertScript.attributes)) script.setAttribute(attribute.name, attribute.value);
-    script.text = inertScript.text;
-    inertScript.replaceWith(script);
-  }
+  document.open();
+  document.write(html);
+  document.close();
 }
 
 function setBusy(value: boolean): void {
