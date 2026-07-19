@@ -212,7 +212,7 @@ async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources:
   }
 
   const launchSource = input.requireLaunchSource === true
-    ? await selectLaunchSource(request, sources, release.assets, timeoutMs, input.onProgress)
+    ? await selectLaunchSource(request, sources, release.assets, release.entrypoint, timeoutMs, input.onProgress)
     : undefined;
 
   return {
@@ -641,51 +641,37 @@ async function fetchVerifiedBundlePath(
 ): Promise<Uint8Array> {
   const failures: string[] = [];
   const errors: unknown[] = [];
-  return await new Promise((resolve, reject) => {
-    let pending = sources.length;
-    let settled = false;
-    for (const source of sources) {
-      const url = new URL(path, source).toString();
-      void (async () => {
-        const started = performanceNow();
-        onProgress?.({ state: "fetching", path, source, url });
-        try {
-          const bytes = await fetchBytes(request, url, timeoutMs);
-          if (settled) return;
-          await verifyBytes(bytes);
-          if (settled) return;
-          onProgress?.({ state: "verified", path, source, url, elapsedMs: Math.round(performanceNow() - started) });
-          settled = true;
-          resolve(bytes);
-        } catch (error) {
-          if (settled) return;
-          onProgress?.({ state: "failed", path, source, url, elapsedMs: Math.round(performanceNow() - started), message: messageOf(error) });
-          errors.push(error);
-          failures.push(`${url}: ${messageOf(error)}`);
-          pending -= 1;
-          if (pending === 0 && !settled) {
-            if (errors.length === 1 && errors[0] instanceof LumenError && errors[0].code !== "FETCH_FAILED") {
-              reject(errors[0]);
-              return;
-            }
-            reject(new LumenError("FETCH_FAILED", `All repository sources failed for ${path}: ${failures.join(" | ")}`));
-          }
-        }
-      })();
+  for (const source of sources) {
+    const url = new URL(path, source).toString();
+    const started = performanceNow();
+    onProgress?.({ state: "fetching", path, source, url });
+    try {
+      const bytes = await fetchBytes(request, url, timeoutMs);
+      await verifyBytes(bytes);
+      onProgress?.({ state: "verified", path, source, url, elapsedMs: Math.round(performanceNow() - started) });
+      return bytes;
+    } catch (error) {
+      onProgress?.({ state: "failed", path, source, url, elapsedMs: Math.round(performanceNow() - started), message: messageOf(error) });
+      errors.push(error);
+      failures.push(`${url}: ${messageOf(error)}`);
     }
-  });
+  }
+  if (errors.length === 1 && errors[0] instanceof LumenError && errors[0].code !== "FETCH_FAILED") throw errors[0];
+  throw new LumenError("FETCH_FAILED", `All repository sources failed for ${path}: ${failures.join(" | ")}`);
 }
 
 async function selectLaunchSource(
   request: typeof fetch,
   sources: readonly string[],
   assets: Record<string, LumenTarget>,
+  entrypoint: string,
   timeoutMs: number | undefined,
   onProgress: ((event: LumenProgressEvent) => void) | undefined
 ): Promise<string> {
   const failures: string[] = [];
+  const launchAssets = Object.entries(assets).filter(([path]) => path !== entrypoint);
   for (const source of sources) {
-    const checked = await Promise.all(Object.entries(assets).map(async ([path, target]) => {
+    const checked = await Promise.all(launchAssets.map(async ([path, target]) => {
       const url = new URL(path, source).toString();
       const started = performanceNow();
       onProgress?.({ state: "fetching", path: `launch:${path}`, source, url });
