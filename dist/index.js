@@ -32,7 +32,7 @@ export async function createLumenVerifiedDocument(input) {
     const entrypointBytes = result.assets.get(result.release.entrypoint);
     if (entrypointBytes === undefined)
         throw new LumenError("INVALID_RELEASE", `Release entrypoint asset is missing: ${result.release.entrypoint}`);
-    const html = prepareLaunchHtml(textDecoder.decode(entrypointBytes), result.source, result.release.assets);
+    const html = prepareLaunchHtml(textDecoder.decode(entrypointBytes), result.source, result.release.assets, input.route);
     return { result, html };
 }
 async function verifyLumenBundleFromSources(input) {
@@ -78,7 +78,8 @@ export function parseLumenUrl(url) {
     if (channel !== null || root !== null) {
         if (channel === null || root === null)
             throw new LumenError("BAD_INPUT", "Channel launch URL requires channel and root");
-        return { channel, root };
+        const route = optionalLaunchRoute(params.get("route"));
+        return { channel, root, ...(route === undefined ? {} : { route }) };
     }
     const packedChannel = params.get("ch");
     if (packedChannel !== null)
@@ -96,11 +97,13 @@ export function parseLumenUrl(url) {
         throw new LumenError("BAD_INPUT", "Launch URL is missing source or cid");
     const releasePath = optionalParam(params, "release") ?? optionalParam(params, "releasePath");
     const runtimePath = optionalParam(params, "runtime") ?? optionalParam(params, "runtimePath");
+    const route = optionalLaunchRoute(params.get("route"));
     return {
         source: resolvedSource,
         bundleDigest,
         ...(releasePath === undefined ? {} : { releasePath }),
-        ...(runtimePath === undefined ? {} : { runtimePath })
+        ...(runtimePath === undefined ? {} : { runtimePath }),
+        ...(route === undefined ? {} : { route })
     };
 }
 export function parseLumenLaunchUrl(url) {
@@ -122,6 +125,8 @@ export function buildLumenLaunchUrl(input) {
             params.set("release", input.releasePath);
         if (input.runtimePath !== undefined)
             params.set("runtime", input.runtimePath);
+        if (input.route !== undefined)
+            params.set("route", input.route);
     }
     else {
         params.set("l", packLaunchPayload({
@@ -130,7 +135,8 @@ export function buildLumenLaunchUrl(input) {
             ...(input.ipfs === undefined ? {} : { c: input.ipfs }),
             d: input.bundleDigest,
             ...(input.releasePath === undefined ? {} : { r: input.releasePath }),
-            ...(input.runtimePath === undefined ? {} : { u: input.runtimePath })
+            ...(input.runtimePath === undefined ? {} : { u: input.runtimePath }),
+            ...(input.route === undefined ? {} : { a: input.route })
         }));
     }
     url.hash = params.toString();
@@ -142,9 +148,16 @@ export function buildLumenChannelUrl(input) {
     if (input.format === "debug") {
         params.set("channel", input.channel);
         params.set("root", input.root);
+        if (input.route !== undefined)
+            params.set("route", input.route);
     }
     else {
-        params.set("ch", packChannelPayload({ v: 1, c: input.channel, r: input.root }));
+        params.set("ch", packChannelPayload({
+            v: 1,
+            c: input.channel,
+            r: input.root,
+            ...(input.route === undefined ? {} : { a: input.route })
+        }));
     }
     url.hash = params.toString();
     return url.toString();
@@ -169,12 +182,13 @@ export function buildLumenLaunchAssetUrl(source, path) {
     }
     return new URL(path, baseSource).toString();
 }
-function prepareLaunchHtml(html, source, assets) {
+function prepareLaunchHtml(html, source, assets, route) {
     const rewrittenHtml = injectImportMapIntegrity(injectSubresourceIntegrity(rewriteRootRelativeAssetUrls(html), assets), source, assets);
     const base = `<base href="${escapeHtmlAttribute(ensureTrailingSlash(source))}">`;
+    const launchContext = route === undefined ? "" : `<script>globalThis.__LUMEN_LAUNCH_ROUTE__=${JSON.stringify(route)};</script>`;
     if (/<head[^>]*>/iu.test(rewrittenHtml))
-        return rewrittenHtml.replace(/<head([^>]*)>/iu, `<head$1>${base}`);
-    return `${base}${rewrittenHtml}`;
+        return rewrittenHtml.replace(/<head([^>]*)>/iu, `<head$1>${base}${launchContext}`);
+    return `${base}${launchContext}${rewrittenHtml}`;
 }
 function rewriteRootRelativeAssetUrls(html) {
     return html.replace(/\b(src|href)=("|')\/(assets\/[^"']+)(\2)/giu, (_match, attribute, quote, path) => {
@@ -264,11 +278,13 @@ function unpackLaunchPayload(value) {
         throw new LumenError("BAD_INPUT", "Lumen launch payload is missing source or cid");
     const releasePath = typeof decoded.r === "string" && decoded.r !== "" ? decoded.r : undefined;
     const runtimePath = typeof decoded.u === "string" && decoded.u !== "" ? decoded.u : undefined;
+    const route = optionalLaunchRoute(decoded.a);
     return {
         source: resolvedSource,
         bundleDigest: decoded.d,
         ...(releasePath === undefined ? {} : { releasePath }),
-        ...(runtimePath === undefined ? {} : { runtimePath })
+        ...(runtimePath === undefined ? {} : { runtimePath }),
+        ...(route === undefined ? {} : { route })
     };
 }
 function unpackChannelPayload(value) {
@@ -284,7 +300,16 @@ function unpackChannelPayload(value) {
     if (!isRecord(decoded) || decoded.v !== 1 || typeof decoded.c !== "string" || typeof decoded.r !== "string") {
         throw new LumenError("BAD_INPUT", "Lumen channel payload is invalid");
     }
-    return { channel: decoded.c, root: decoded.r };
+    const route = optionalLaunchRoute(decoded.a);
+    return { channel: decoded.c, root: decoded.r, ...(route === undefined ? {} : { route }) };
+}
+function optionalLaunchRoute(value) {
+    if (value === null || value === undefined || value === "")
+        return undefined;
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || /[\u0000-\u001f\\]/u.test(value)) {
+        throw new LumenError("BAD_INPUT", "Lumen launch route must be a same-app absolute path");
+    }
+    return value;
 }
 async function fetchAndVerifyLumenChannel(input) {
     const request = input.fetch ?? fetch;

@@ -23,6 +23,7 @@ export type LumenVerifyInput = Readonly<{
     bundleDigest: string;
     releasePath?: string;
     runtimePath?: string;
+    route?: string;
     fetchTimeoutMs?: number;
     fetch?: typeof fetch;
     requireLaunchSource?: boolean;
@@ -31,6 +32,7 @@ export type LumenVerifyInput = Readonly<{
 export type LumenChannelInput = Readonly<{
     channel: string;
     root: string;
+    route?: string;
     fetchTimeoutMs?: number;
     fetch?: typeof fetch;
     requireLaunchSource?: boolean;
@@ -74,12 +76,14 @@ export declare function buildLumenLaunchUrl(input: {
     bundleDigest: string;
     releasePath?: string;
     runtimePath?: string;
+    route?: string;
     format?: "compact" | "debug";
 }): string;
 export declare function buildLumenChannelUrl(input: {
     launcherUrl: string;
     channel: string;
     root: string;
+    route?: string;
     format?: "compact" | "debug";
 }): string;
 export declare function buildLumenLaunchAssetUrl(source: string, path: string): string;
