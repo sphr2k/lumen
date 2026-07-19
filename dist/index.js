@@ -9,8 +9,23 @@ export class LumenError extends Error {
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
 export async function verifyLumenBundle(input) {
+    if (isChannelInput(input)) {
+        const channel = await fetchAndVerifyLumenChannel(input);
+        const bundleInput = {
+            ...channel.signed.activeRelease,
+            ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
+            ...(input.fetchTimeoutMs === undefined ? {} : { fetchTimeoutMs: input.fetchTimeoutMs }),
+            ...(input.requireLaunchSource === undefined ? {} : { requireLaunchSource: input.requireLaunchSource }),
+            ...(input.onProgress === undefined ? {} : { onProgress: input.onProgress }),
+        };
+        const result = await verifyLumenBundle(bundleInput);
+        enforceChannelRevocations(channel.signed, result);
+        enforceChannelRollback(channel.signed);
+        return result;
+    }
     const request = input.fetch ?? fetch;
-    return await verifyLumenBundleFromSources({ ...input, sources: sourceCandidates(input.source), fetch: request });
+    const bundleInput = input;
+    return await verifyLumenBundleFromSources({ ...bundleInput, sources: sourceCandidates(bundleInput.source), fetch: request });
 }
 export async function createLumenVerifiedDocument(input) {
     const result = await verifyLumenBundle({ ...input, requireLaunchSource: true });
@@ -28,7 +43,7 @@ async function verifyLumenBundleFromSources(input) {
         await assertSha256Digest(bytes, input.bundleDigest, "index.json");
     });
     const index = parseIndex(indexBytes);
-    await verifyIndexSignature(index);
+    const verifiedPublisher = await verifyIndexSignature(index);
     const releaseTargetPath = input.releasePath ?? selectOnlyTarget(index.signed.targets, "lumen/static-web-release/1");
     const releaseBytes = await fetchTarget(request, sources, index.signed.targets, releaseTargetPath, timeoutMs);
     const release = parseRelease(releaseBytes);
@@ -49,14 +64,25 @@ async function verifyLumenBundleFromSources(input) {
     return {
         source: launchSource ?? sources[0] ?? ensureTrailingSlash(input.source),
         generation: index.signed.generation,
+        verifiedPublisher,
         release,
         ...(runtimeBytes === undefined ? {} : { runtimeBytes }),
         assets
     };
 }
-export function parseLumenLaunchUrl(url) {
+export function parseLumenUrl(url) {
     const parsed = new URL(url);
     const params = new URLSearchParams(parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash);
+    const channel = params.get("channel");
+    const root = params.get("root");
+    if (channel !== null || root !== null) {
+        if (channel === null || root === null)
+            throw new LumenError("BAD_INPUT", "Channel launch URL requires channel and root");
+        return { channel, root };
+    }
+    const packedChannel = params.get("ch");
+    if (packedChannel !== null)
+        return unpackChannelPayload(packedChannel);
     const packed = params.get("l");
     if (packed !== null)
         return unpackLaunchPayload(packed);
@@ -76,6 +102,12 @@ export function parseLumenLaunchUrl(url) {
         ...(releasePath === undefined ? {} : { releasePath }),
         ...(runtimePath === undefined ? {} : { runtimePath })
     };
+}
+export function parseLumenLaunchUrl(url) {
+    const parsed = parseLumenUrl(url);
+    if (isChannelInput(parsed))
+        throw new LumenError("BAD_INPUT", "Expected immutable Lumen launch link, received channel link");
+    return parsed;
 }
 export function buildLumenLaunchUrl(input) {
     const url = new URL(input.launcherUrl);
@@ -100,6 +132,19 @@ export function buildLumenLaunchUrl(input) {
             ...(input.releasePath === undefined ? {} : { r: input.releasePath }),
             ...(input.runtimePath === undefined ? {} : { u: input.runtimePath })
         }));
+    }
+    url.hash = params.toString();
+    return url.toString();
+}
+export function buildLumenChannelUrl(input) {
+    const url = new URL(input.launcherUrl);
+    const params = new URLSearchParams();
+    if (input.format === "debug") {
+        params.set("channel", input.channel);
+        params.set("root", input.root);
+    }
+    else {
+        params.set("ch", packChannelPayload({ v: 1, c: input.channel, r: input.root }));
     }
     url.hash = params.toString();
     return url.toString();
@@ -146,6 +191,9 @@ function optionalParam(params, name) {
 function packLaunchPayload(payload) {
     return `v1.${bytesToBase64Url(textEncoder.encode(canonicalJson(payload)))}`;
 }
+function packChannelPayload(payload) {
+    return `v1.${bytesToBase64Url(textEncoder.encode(canonicalJson(payload)))}`;
+}
 function unpackLaunchPayload(value) {
     if (!value.startsWith("v1."))
         throw new LumenError("BAD_INPUT", "Unsupported Lumen launch payload version");
@@ -172,6 +220,110 @@ function unpackLaunchPayload(value) {
         ...(releasePath === undefined ? {} : { releasePath }),
         ...(runtimePath === undefined ? {} : { runtimePath })
     };
+}
+function unpackChannelPayload(value) {
+    if (!value.startsWith("v1."))
+        throw new LumenError("BAD_INPUT", "Unsupported Lumen channel payload version");
+    let decoded;
+    try {
+        decoded = JSON.parse(textDecoder.decode(base64UrlToBytes(value.slice(3))));
+    }
+    catch {
+        throw new LumenError("BAD_INPUT", "Lumen channel payload is not valid base64url JSON");
+    }
+    if (!isRecord(decoded) || decoded.v !== 1 || typeof decoded.c !== "string" || typeof decoded.r !== "string") {
+        throw new LumenError("BAD_INPUT", "Lumen channel payload is invalid");
+    }
+    return { channel: decoded.c, root: decoded.r };
+}
+async function fetchAndVerifyLumenChannel(input) {
+    const request = input.fetch ?? fetch;
+    const channelBytes = await fetchBytes(request, input.channel, input.fetchTimeoutMs);
+    const channel = parseChannel(channelBytes);
+    await verifyChannelSignature(channel, input.root);
+    assertFreshDates(channel.signed.createdAt, channel.signed.expiresAt, "Channel");
+    return channel;
+}
+function parseChannel(bytes) {
+    const value = parseJson(bytes, "INVALID_CHANNEL", "channel is not valid JSON");
+    if (!isRecord(value) || !isRecord(value.signed) || !Array.isArray(value.signatures)) {
+        throw new LumenError("INVALID_CHANNEL", "channel must contain signed and signatures");
+    }
+    const signed = value.signed;
+    const activeRelease = signed.activeRelease;
+    if (signed.schema !== "lumen/channel/1"
+        || typeof signed.generation !== "number"
+        || !Number.isSafeInteger(signed.generation)
+        || signed.generation < 1
+        || typeof signed.createdAt !== "string"
+        || typeof signed.expiresAt !== "string"
+        || !Array.isArray(signed.roots)
+        || !isRecord(activeRelease)
+        || typeof activeRelease.source !== "string"
+        || typeof activeRelease.bundleDigest !== "string") {
+        throw new LumenError("INVALID_CHANNEL", "channel signed object is invalid");
+    }
+    if (signed.roots.length === 0)
+        throw new LumenError("INVALID_CHANNEL", "channel has no root keys");
+    for (const root of signed.roots)
+        assertNotaryShape(root, "channel root");
+    if (activeRelease.releasePath !== undefined && typeof activeRelease.releasePath !== "string")
+        throw new LumenError("INVALID_CHANNEL", "activeRelease.releasePath is invalid");
+    if (activeRelease.runtimePath !== undefined && typeof activeRelease.runtimePath !== "string")
+        throw new LumenError("INVALID_CHANNEL", "activeRelease.runtimePath is invalid");
+    if (typeof activeRelease.releasePath === "string")
+        assertSafeRelativePath(activeRelease.releasePath);
+    if (typeof activeRelease.runtimePath === "string")
+        assertSafeRelativePath(activeRelease.runtimePath);
+    assertStringArrayOrUndefined(signed.revokedPublisherKeys, "revokedPublisherKeys");
+    assertStringArrayOrUndefined(signed.revokedBundleDigests, "revokedBundleDigests");
+    if (signed.minimumBundleGeneration !== undefined
+        && (typeof signed.minimumBundleGeneration !== "number" || !Number.isSafeInteger(signed.minimumBundleGeneration) || signed.minimumBundleGeneration < 1)) {
+        throw new LumenError("INVALID_CHANNEL", "minimumBundleGeneration is invalid");
+    }
+    return value;
+}
+async function verifyChannelSignature(channel, expectedRoot) {
+    const expected = normalizeSha256Fingerprint(expectedRoot, "root");
+    const acceptedRoots = channel.signed.roots.filter((root) => normalizeKeyFingerprint(root.publicKeySpkiSha256) === expected);
+    if (acceptedRoots.length === 0)
+        throw new LumenError("INVALID_SIGNATURE", "Channel does not contain the pinned root key");
+    const payload = textEncoder.encode(canonicalJson(channel.signed));
+    for (const signature of channel.signatures) {
+        if (!isRecord(signature) || typeof signature.rootId !== "string" || typeof signature.signatureBase64 !== "string")
+            continue;
+        const root = acceptedRoots.find((candidate) => candidate.id === signature.rootId);
+        if (root === undefined)
+            continue;
+        if (await verifyP256Signature(root, signature.signatureBase64, payload)) {
+            return { id: root.id, publicKeySpkiSha256: normalizeKeyFingerprint(root.publicKeySpkiSha256) };
+        }
+    }
+    throw new LumenError("INVALID_SIGNATURE", "No valid Lumen Channel signature found for the pinned root key");
+}
+function enforceChannelRevocations(channel, result) {
+    const revokedBundles = new Set((channel.revokedBundleDigests ?? []).map((digest) => normalizeSha256Fingerprint(digest, "revoked bundle digest")));
+    const activeDigest = normalizeSha256Fingerprint(channel.activeRelease.bundleDigest, "active release digest");
+    if (revokedBundles.has(activeDigest))
+        throw new LumenError("REVOKED", "Active release bundle digest is revoked by the Lumen Channel");
+    const revokedKeys = new Set((channel.revokedPublisherKeys ?? []).map((key) => normalizeSha256Fingerprint(key, "revoked publisher key")));
+    if (revokedKeys.has(normalizeKeyFingerprint(result.verifiedPublisher.publicKeySpkiSha256))) {
+        throw new LumenError("REVOKED", "Active release publisher key is revoked by the Lumen Channel");
+    }
+    if (channel.minimumBundleGeneration !== undefined && result.generation < channel.minimumBundleGeneration) {
+        throw new LumenError("REVOKED", "Active release generation is below the Lumen Channel minimum");
+    }
+}
+function enforceChannelRollback(channel) {
+    if (typeof localStorage === "undefined")
+        return;
+    const keyIds = channel.roots.map((root) => normalizeKeyFingerprint(root.publicKeySpkiSha256)).sort().join(",");
+    const storageKey = `lumen:channel:${keyIds}`;
+    const stored = Number.parseInt(localStorage.getItem(storageKey) ?? "0", 10);
+    if (Number.isSafeInteger(stored) && stored > channel.generation) {
+        throw new LumenError("INVALID_CHANNEL", "Lumen Channel generation rollback detected");
+    }
+    localStorage.setItem(storageKey, String(channel.generation));
 }
 function sourceCandidates(source) {
     const primary = ensureTrailingSlash(source);
@@ -207,6 +359,9 @@ function parseIndex(bytes) {
     if (signed.schema !== "lumen/index/1" || typeof signed.generation !== "number" || !Array.isArray(signed.notaries) || !isRecord(signed.targets)) {
         throw new LumenError("INVALID_INDEX", "index signed object is invalid");
     }
+    assertFreshDates(String(signed.createdAt), String(signed.expiresAt), "Index");
+    for (const notary of signed.notaries)
+        assertNotaryShape(notary, "index notary");
     return value;
 }
 function parseRelease(bytes) {
@@ -234,14 +389,9 @@ async function verifyIndexSignature(index) {
         const notary = index.signed.notaries.find((candidate) => candidate.id === signature.notaryId);
         if (notary === undefined)
             continue;
-        const publicKeyBytes = base64ToBytes(notary.publicKeySpkiBase64);
-        if (await sha256Hex(publicKeyBytes) !== notary.publicKeySpkiSha256) {
-            throw new LumenError("INVALID_SIGNATURE", `Notary ${notary.id} public key fingerprint does not match`);
-        }
-        const publicKey = await crypto.subtle.importKey("spki", toArrayBuffer(publicKeyBytes), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-        const ok = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, toArrayBuffer(derEcdsaSignatureToRaw(base64ToBytes(signature.signatureBase64))), toArrayBuffer(payload));
+        const ok = await verifyP256Signature(notary, signature.signatureBase64, payload);
         if (ok)
-            return;
+            return { id: notary.id, publicKeySpkiSha256: normalizeKeyFingerprint(notary.publicKeySpkiSha256) };
     }
     throw new LumenError("INVALID_SIGNATURE", "No valid Lumen Index signature found");
 }
@@ -361,6 +511,31 @@ function assertTargetShape(value, path) {
         throw new LumenError("INVALID_TARGET", `Target metadata is invalid for ${path}`);
     }
 }
+function assertNotaryShape(value, label) {
+    if (!isRecord(value)
+        || typeof value.id !== "string"
+        || value.id.trim() === ""
+        || value.algorithm !== "ECDSA-P256-SHA256"
+        || typeof value.publicKeySpkiBase64 !== "string"
+        || typeof value.publicKeySpkiSha256 !== "string") {
+        throw new LumenError("INVALID_SIGNATURE", `${label} is invalid`);
+    }
+}
+function assertStringArrayOrUndefined(value, label) {
+    if (value !== undefined && (!Array.isArray(value) || value.some((entry) => typeof entry !== "string"))) {
+        throw new LumenError("INVALID_CHANNEL", `${label} must be an array of strings`);
+    }
+}
+function assertFreshDates(createdAt, expiresAt, label) {
+    const created = Date.parse(createdAt);
+    const expires = Date.parse(expiresAt);
+    if (!Number.isFinite(created) || !Number.isFinite(expires) || expires <= created) {
+        throw new LumenError(label === "Channel" ? "INVALID_CHANNEL" : "INVALID_INDEX", `${label} createdAt/expiresAt ordering is invalid`);
+    }
+    if (expires <= Date.now()) {
+        throw new LumenError(label === "Channel" ? "INVALID_CHANNEL" : "INVALID_INDEX", `${label} is expired`);
+    }
+}
 async function assertTargetBytes(bytes, target, label) {
     if (bytes.byteLength !== target.length) {
         throw new LumenError("DIGEST_MISMATCH", `${label} length mismatch`);
@@ -381,8 +556,25 @@ function assertSafeRelativePath(path) {
         throw new LumenError("INVALID_TARGET", `Unsafe bundle path: ${path}`);
     }
 }
+function normalizeSha256Fingerprint(value, label) {
+    const normalized = value.startsWith("sha256:") ? value : `sha256:${value}`;
+    if (!/^sha256:[0-9a-f]{64}$/u.test(normalized))
+        throw new LumenError("BAD_INPUT", `${label} must be sha256:<hex>`);
+    return normalized;
+}
+function normalizeKeyFingerprint(value) {
+    return normalizeSha256Fingerprint(value, "key fingerprint");
+}
 function ensureTrailingSlash(value) {
     return value.endsWith("/") ? value : `${value}/`;
+}
+async function verifyP256Signature(key, signatureBase64, payload) {
+    const publicKeyBytes = base64ToBytes(key.publicKeySpkiBase64);
+    if (await sha256Hex(publicKeyBytes) !== key.publicKeySpkiSha256) {
+        throw new LumenError("INVALID_SIGNATURE", `Key ${key.id} public key fingerprint does not match`);
+    }
+    const publicKey = await crypto.subtle.importKey("spki", toArrayBuffer(publicKeyBytes), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    return await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, toArrayBuffer(derEcdsaSignatureToRaw(base64ToBytes(signatureBase64))), toArrayBuffer(payload));
 }
 async function sha256Hex(bytes) {
     const digest = await crypto.subtle.digest("SHA-256", toArrayBuffer(bytes));
@@ -397,6 +589,9 @@ function canonicalJson(value) {
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isChannelInput(value) {
+    return "channel" in value;
 }
 function messageOf(error) {
     return error instanceof Error ? error.message : String(error);

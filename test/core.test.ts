@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { buildLumenLaunchAssetUrl, buildLumenLaunchUrl, createLumenVerifiedDocument, parseLumenLaunchUrl, verifyLumenBundle } from "../src/index.js";
+import { buildLumenChannelUrl, buildLumenLaunchAssetUrl, buildLumenLaunchUrl, createLumenVerifiedDocument, parseLumenLaunchUrl, parseLumenUrl, verifyLumenBundle } from "../src/index.js";
 
 const encoder = new TextEncoder();
 
@@ -64,6 +64,46 @@ async function fixture(overrides: { assetBytes?: Uint8Array } = {}) {
       const bytes = files.get(path);
       return bytes === undefined ? new Response("not found", { status: 404 }) : new Response(Buffer.from(bytes));
     }
+  };
+}
+
+async function channelFixture(overrides: {
+  revokeActiveBundle?: boolean;
+  revokedPublisherKeys?: readonly string[];
+  revokedBundleDigests?: readonly string[];
+  minimumBundleGeneration?: number;
+} = {}) {
+  const data = await fixture();
+  const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const publicKeyDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+  const signed = {
+    schema: "lumen/channel/1",
+    generation: 1,
+    createdAt: "2026-07-17T00:00:00.000Z",
+    expiresAt: "2027-07-17T00:00:00.000Z",
+    roots: [{
+      id: "root",
+      algorithm: "ECDSA-P256-SHA256",
+      publicKeySpkiBase64: Buffer.from(publicKeyDer).toString("base64"),
+      publicKeySpkiSha256: sha256(publicKeyDer)
+    }],
+    activeRelease: {
+      source: "https://example.test/bundle/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      runtimePath: "runtime/example.json"
+    },
+    ...(overrides.revokedPublisherKeys === undefined ? {} : { revokedPublisherKeys: overrides.revokedPublisherKeys }),
+    ...(overrides.revokedBundleDigests === undefined && overrides.revokeActiveBundle !== true ? {} : {
+      revokedBundleDigests: overrides.revokeActiveBundle === true ? [data.bundleDigest] : overrides.revokedBundleDigests
+    }),
+    ...(overrides.minimumBundleGeneration === undefined ? {} : { minimumBundleGeneration: overrides.minimumBundleGeneration })
+  };
+  const signature = sign("sha256", encoder.encode(canonicalJson(signed)), privateKey).toString("base64");
+  data.files.set("channel.json", encoder.encode(JSON.stringify({ signed, signatures: [{ rootId: "root", signatureBase64: signature }] })));
+  return {
+    ...data,
+    rootFingerprint: `sha256:${sha256(publicKeyDer)}`,
   };
 }
 
@@ -316,6 +356,29 @@ describe("verifyLumenBundle", () => {
       fetch: data.fetch
     })).rejects.toMatchObject({ code: "DIGEST_MISMATCH" });
   });
+
+  it("verifies an active release through a root-signed channel", async () => {
+    const data = await channelFixture();
+
+    const result = await verifyLumenBundle({
+      channel: "https://example.test/bundle/channel.json",
+      root: data.rootFingerprint,
+      fetch: data.fetch
+    });
+
+    expect(result.release.version).toBe("0.0.1");
+    expect(result.runtimeBytes).toEqual(data.files.get("targets/runtime/example.json"));
+  });
+
+  it("rejects a channel whose active bundle digest is revoked", async () => {
+    const revoked = await channelFixture({ revokeActiveBundle: true });
+
+    await expect(verifyLumenBundle({
+      channel: "https://example.test/bundle/channel.json",
+      root: revoked.rootFingerprint,
+      fetch: revoked.fetch
+    })).rejects.toMatchObject({ code: "REVOKED" });
+  });
 });
 
 function fileResponse(files: ReadonlyMap<string, Uint8Array>, path: string): Response {
@@ -371,6 +434,20 @@ describe("Lumen launch links", () => {
       bundleDigest: "sha256:abc",
       releasePath: "releases/app.json",
       runtimePath: "runtime/app.json"
+    });
+  });
+
+  it("builds and parses compact channel links", () => {
+    const url = buildLumenChannelUrl({
+      launcherUrl: "https://lumen.example/",
+      channel: "https://example.test/channel.json",
+      root: "sha256:abc"
+    });
+
+    expect(url).toMatch(/^https:\/\/lumen\.example\/#ch=v1\.[A-Za-z0-9_-]+$/u);
+    expect(parseLumenUrl(url)).toEqual({
+      channel: "https://example.test/channel.json",
+      root: "sha256:abc"
     });
   });
 });
