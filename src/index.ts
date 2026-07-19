@@ -508,8 +508,7 @@ function sourceCandidates(source: string): string[] {
     `https://dweb.link/ipfs/${cid}/`,
     `https://${cid}.ipfs.dweb.link/`,
     `https://ipfs.io/ipfs/${cid}/`,
-    `https://gateway.pinata.cloud/ipfs/${cid}/`,
-    `https://w3s.link/ipfs/${cid}/`
+    `https://gateway.pinata.cloud/ipfs/${cid}/`
   ]);
 }
 

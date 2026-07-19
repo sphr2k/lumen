@@ -219,8 +219,10 @@ describe("verifyLumenBundle", () => {
 
   it("refuses to launch when no single gateway can serve the whole app", async () => {
     const data = await fixture();
+    const seen: string[] = [];
     const fetch = async (input: RequestInfo | URL) => {
       const href = input instanceof Request ? input.url : input.toString();
+      seen.push(href);
       const url = new URL(href);
       const path = fixtureGatewayPath(url);
       if (path === "index.json" || path === "targets/releases/0.0.1/manifest.json") {
@@ -242,6 +244,7 @@ describe("verifyLumenBundle", () => {
       fetch,
       requireLaunchSource: true
     })).rejects.toMatchObject({ code: "LAUNCH_UNAVAILABLE" });
+    expect(seen.some((href) => new URL(href).hostname === "w3s.link")).toBe(false);
   });
 
   it("emits fetch progress for diagnostics", async () => {
