@@ -1,7 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { buildLumenLaunchAssetUrl, buildLumenLaunchUrl, parseLumenLaunchUrl, verifyLumenBundle } from "../src/index.js";
+import { buildLumenLaunchAssetUrl, buildLumenLaunchUrl, createLumenVerifiedDocument, parseLumenLaunchUrl, verifyLumenBundle } from "../src/index.js";
 
 const encoder = new TextEncoder();
 
@@ -220,6 +220,22 @@ describe("verifyLumenBundle", () => {
     expect(events).toContain("verified:index.json");
     expect(events).toContain("verified:index.html");
     expect(events).toContain("verified:assets/app.js");
+  });
+
+  it("creates a verified launch document without changing the visible Lumen URL", async () => {
+    const data = await fixture();
+
+    const document = await createLumenVerifiedDocument({
+      source: "https://example.test/bundle/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      runtimePath: "runtime/example.json",
+      fetch: data.fetch
+    });
+
+    expect(document.result.release.entrypoint).toBe("index.html");
+    expect(document.html).toContain('<base href="https://example.test/bundle/">');
+    expect(document.html).toContain('src="./assets/app.js"');
   });
 
   it("ignores a fast gateway response whose target digest does not match", async () => {

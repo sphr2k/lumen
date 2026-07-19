@@ -1,4 +1,4 @@
-import { buildLumenLaunchAssetUrl, parseLumenLaunchUrl, verifyLumenBundle, type LumenProgressEvent, type LumenVerifyInput } from "../../../src/index.js";
+import { createLumenVerifiedDocument, parseLumenLaunchUrl, verifyLumenBundle, type LumenProgressEvent, type LumenVerifyInput } from "../../../src/index.js";
 import "./style.css";
 
 const form = document.querySelector<HTMLFormElement>("#verify-form");
@@ -72,9 +72,11 @@ async function verify(shouldLaunch: boolean): Promise<void> {
     setActionMode("busy");
     setStatus("verifying", "Verifying signed app", "Checking signed metadata and release assets before launch.", shouldLaunch ? "Looking for one gateway that can serve the whole app." : "Gateway responses may be mixed because this is verification only.");
     ui.output.textContent = "Verification started.\n";
-    const result = await verifyLumenBundle({
+    const loaded = shouldLaunch
+      ? await createLumenVerifiedDocument({ ...readForm(), onProgress: reportProgress })
+      : undefined;
+    const result = loaded?.result ?? await verifyLumenBundle({
       ...readForm(),
-      requireLaunchSource: shouldLaunch,
       onProgress: reportProgress,
     });
     ui.output.textContent = JSON.stringify({
@@ -85,8 +87,10 @@ async function verify(shouldLaunch: boolean): Promise<void> {
       assets: [...result.assets.keys()]
     }, null, 2);
     if (shouldLaunch) {
-      setStatus("verified", "Verified and launchable", "The app bundle is authentic and one gateway can serve all launch assets.", `Opening ${hostLabel(result.source)} · release ${result.release.version}`);
-      window.setTimeout(() => launchVerifiedAsset(result.source, result.release.entrypoint), 250);
+      setStatus("verified", "Launching verified app", "The app bundle is authentic. Lumen is replacing this document with verified bytes.", `Keeping this Lumen URL · release ${result.release.version}`);
+      window.setTimeout(() => {
+        if (loaded !== undefined) launchVerifiedDocument(loaded.html);
+      }, 250);
     } else {
       setStatus("verified", "Verified", "The bundle is authentic and all release assets match their signed hashes.", `Release ${result.release.version} · generation ${String(result.generation)}`);
       setActionMode("manual");
@@ -140,8 +144,15 @@ function readForm(): LumenVerifyInput {
   };
 }
 
-function launchVerifiedAsset(source: string, path: string): void {
-  location.assign(buildLumenLaunchAssetUrl(source, path));
+function launchVerifiedDocument(html: string): void {
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  document.documentElement.replaceWith(document.importNode(parsed.documentElement, true));
+  for (const inertScript of Array.from(document.scripts)) {
+    const script = document.createElement("script");
+    for (const attribute of Array.from(inertScript.attributes)) script.setAttribute(attribute.name, attribute.value);
+    script.text = inertScript.text;
+    inertScript.replaceWith(script);
+  }
 }
 
 function setBusy(value: boolean): void {

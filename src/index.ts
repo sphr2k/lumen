@@ -6,6 +6,11 @@ export type LumenVerificationResult = Readonly<{
   assets: ReadonlyMap<string, Uint8Array>;
 }>;
 
+export type LumenVerifiedDocument = Readonly<{
+  result: LumenVerificationResult;
+  html: string;
+}>;
+
 export type LumenProgressEvent = Readonly<{
   state: "fetching" | "verified" | "failed";
   path: string;
@@ -99,6 +104,14 @@ const textEncoder = new TextEncoder();
 export async function verifyLumenBundle(input: LumenVerifyInput): Promise<LumenVerificationResult> {
   const request = input.fetch ?? fetch;
   return await verifyLumenBundleFromSources({ ...input, sources: sourceCandidates(input.source), fetch: request });
+}
+
+export async function createLumenVerifiedDocument(input: LumenVerifyInput): Promise<LumenVerifiedDocument> {
+  const result = await verifyLumenBundle({ ...input, requireLaunchSource: true });
+  const entrypointBytes = result.assets.get(result.release.entrypoint);
+  if (entrypointBytes === undefined) throw new LumenError("INVALID_RELEASE", `Release entrypoint asset is missing: ${result.release.entrypoint}`);
+  const html = prepareLaunchHtml(textDecoder.decode(entrypointBytes), result.source);
+  return { result, html };
 }
 
 async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources: readonly string[]; fetch: typeof fetch }): Promise<LumenVerificationResult> {
@@ -218,6 +231,23 @@ export function buildLumenLaunchAssetUrl(source: string, path: string): string {
   }
 
   return new URL(path, baseSource).toString();
+}
+
+function prepareLaunchHtml(html: string, source: string): string {
+  const rewrittenHtml = rewriteRootRelativeAssetUrls(html);
+  const base = `<base href="${escapeHtmlAttribute(ensureTrailingSlash(source))}">`;
+  if (/<head[^>]*>/iu.test(rewrittenHtml)) return rewrittenHtml.replace(/<head([^>]*)>/iu, `<head$1>${base}`);
+  return `${base}${rewrittenHtml}`;
+}
+
+function rewriteRootRelativeAssetUrls(html: string): string {
+  return html.replace(/\b(src|href)=("|')\/(assets\/[^"']+)(\2)/giu, (_match: string, attribute: string, quote: string, path: string) => {
+    return `${attribute}=${quote}${path}${quote}`;
+  });
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replace(/&/gu, "&amp;").replace(/"/gu, "&quot;").replace(/</gu, "&lt;");
 }
 
 function optionalParam(params: URLSearchParams, name: string): string | undefined {
