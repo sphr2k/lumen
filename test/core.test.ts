@@ -132,6 +132,37 @@ describe("verifyLumenBundle", () => {
     expect([...result.assets.keys()].sort()).toEqual(["assets/app.css", "assets/app.js", "index.html"]);
   });
 
+  it("roundtrips an optional SPA route in compact channel URLs", () => {
+    const url = buildLumenChannelUrl({
+      launcherUrl: "https://example.test/lumen/",
+      channel: "https://example.test/ipns/channel.json",
+      root: `sha256:${"a".repeat(64)}`,
+      route: "/admin",
+    });
+
+    expect(parseLumenUrl(url)).toEqual({
+      channel: "https://example.test/ipns/channel.json",
+      root: `sha256:${"a".repeat(64)}`,
+      route: "/admin",
+    });
+  });
+
+  it("injects the optional SPA route before launching verified HTML", async () => {
+    const data = await fixture();
+
+    const document = await createLumenVerifiedDocument({
+      source: "https://example.test/bundle/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      runtimePath: "runtime/example.json",
+      route: "/admin",
+      fetch: data.fetch,
+    });
+
+    expect(document.html).toContain("globalThis.__LUMEN_LAUNCH_ROUTE__=\"/admin\"");
+    expect(document.html.indexOf("__LUMEN_LAUNCH_ROUTE__")).toBeLessThan(document.html.indexOf("assets/app.js"));
+  });
+
   it("falls back to another public IPFS gateway for the same CID", async () => {
     const data = await fixture();
     const seen: string[] = [];
