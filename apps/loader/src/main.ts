@@ -1,4 +1,4 @@
-import { createLumenVerifiedDocument, parseLumenLaunchUrl, verifyLumenBundle, type LumenProgressEvent, type LumenVerifyInput } from "../../../src/index.js";
+import { createLumenVerifiedDocument, parseLumenUrl, verifyLumenBundle, type LumenInput, type LumenProgressEvent, type LumenVerifyInput } from "../../../src/index.js";
 import "./style.css";
 
 const form = document.querySelector<HTMLFormElement>("#verify-form");
@@ -38,6 +38,7 @@ if (
 }
 
 const ui = { form, source, bundleDigest, releasePath, runtimePath, output, launch, verifyButton, retry, details, timeline, statusIcon, statusTitle, statusMessage, statusMeta };
+let hashInput: LumenInput | undefined;
 
 const launchInputLoaded = hydrateFromHash();
 if (launchInputLoaded) {
@@ -51,6 +52,10 @@ if (launchInputLoaded) {
 ui.form.addEventListener("submit", (event) => {
   event.preventDefault();
   void verify(false);
+});
+
+ui.form.addEventListener("input", () => {
+  hashInput = undefined;
 });
 
 ui.launch.addEventListener("click", () => {
@@ -121,11 +126,19 @@ async function verify(shouldLaunch: boolean): Promise<void> {
 function hydrateFromHash(): boolean {
   if (location.hash.length <= 1) return false;
   try {
-    const parsed = parseLumenLaunchUrl(location.href);
-    ui.source.value = parsed.source;
-    ui.bundleDigest.value = parsed.bundleDigest;
-    ui.releasePath.value = parsed.releasePath ?? "";
-    ui.runtimePath.value = parsed.runtimePath ?? "";
+    const parsed = parseLumenUrl(location.href);
+    hashInput = parsed;
+    if (isChannelInput(parsed)) {
+      ui.source.value = parsed.channel;
+      ui.bundleDigest.value = parsed.root;
+      ui.releasePath.value = "";
+      ui.runtimePath.value = "";
+    } else {
+      ui.source.value = parsed.source;
+      ui.bundleDigest.value = parsed.bundleDigest;
+      ui.releasePath.value = parsed.releasePath ?? "";
+      ui.runtimePath.value = parsed.runtimePath ?? "";
+    }
     return true;
   } catch (error) {
     setStatus("failed", "Invalid Lumen link", "The launch link is missing required verification parameters.", "Open Advanced details to inspect the parser error.");
@@ -135,13 +148,18 @@ function hydrateFromHash(): boolean {
   }
 }
 
-function readForm(): LumenVerifyInput {
+function readForm(): LumenInput {
+  if (hashInput !== undefined) return hashInput;
   return {
     source: ui.source.value,
     bundleDigest: ui.bundleDigest.value,
     ...(ui.releasePath.value === "" ? {} : { releasePath: ui.releasePath.value }),
     ...(ui.runtimePath.value === "" ? {} : { runtimePath: ui.runtimePath.value })
   };
+}
+
+function isChannelInput(value: LumenInput): value is Exclude<LumenInput, LumenVerifyInput> {
+  return "channel" in value;
 }
 
 function launchVerifiedDocument(html: string): void {
