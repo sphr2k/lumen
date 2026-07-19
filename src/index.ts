@@ -179,7 +179,7 @@ export async function createLumenVerifiedDocument(input: LumenInput): Promise<Lu
   const result = await verifyLumenBundle({ ...input, requireLaunchSource: true });
   const entrypointBytes = result.assets.get(result.release.entrypoint);
   if (entrypointBytes === undefined) throw new LumenError("INVALID_RELEASE", `Release entrypoint asset is missing: ${result.release.entrypoint}`);
-  const html = prepareLaunchHtml(textDecoder.decode(entrypointBytes), result.source);
+  const html = prepareLaunchHtml(textDecoder.decode(entrypointBytes), result.source, result.release.assets);
   return { result, html };
 }
 
@@ -335,8 +335,12 @@ export function buildLumenLaunchAssetUrl(source: string, path: string): string {
   return new URL(path, baseSource).toString();
 }
 
-function prepareLaunchHtml(html: string, source: string): string {
-  const rewrittenHtml = rewriteRootRelativeAssetUrls(html);
+function prepareLaunchHtml(html: string, source: string, assets: Record<string, LumenTarget>): string {
+  const rewrittenHtml = injectImportMapIntegrity(
+    injectSubresourceIntegrity(rewriteRootRelativeAssetUrls(html), assets),
+    source,
+    assets
+  );
   const base = `<base href="${escapeHtmlAttribute(ensureTrailingSlash(source))}">`;
   if (/<head[^>]*>/iu.test(rewrittenHtml)) return rewrittenHtml.replace(/<head([^>]*)>/iu, `<head$1>${base}`);
   return `${base}${rewrittenHtml}`;
@@ -346,6 +350,61 @@ function rewriteRootRelativeAssetUrls(html: string): string {
   return html.replace(/\b(src|href)=("|')\/(assets\/[^"']+)(\2)/giu, (_match: string, attribute: string, quote: string, path: string) => {
     return `${attribute}=${quote}${path}${quote}`;
   });
+}
+
+function injectSubresourceIntegrity(html: string, assets: Record<string, LumenTarget>): string {
+  const withScripts = html.replace(/<script\b[^>]*\bsrc=(["'])([^"']+)\1[^>]*>/giu, (tag: string, _quote: string, rawSource: string) => {
+    const target = assets[assetPathFromHtmlUrl(rawSource)];
+    return target === undefined || !isScriptTarget(rawSource, target) ? tag : withHtmlAttribute(withHtmlAttribute(tag, "integrity", sriFromHex(target.sha256)), "crossorigin", "anonymous");
+  });
+  return withScripts.replace(/<link\b[^>]*\bhref=(["'])([^"']+)\1[^>]*>/giu, (tag: string, _quote: string, rawSource: string) => {
+    if (!/\brel=(["'])[^"']*\bstylesheet\b[^"']*\1/iu.test(tag)) return tag;
+    const target = assets[assetPathFromHtmlUrl(rawSource)];
+    return target === undefined || !isStyleTarget(rawSource, target) ? tag : withHtmlAttribute(withHtmlAttribute(tag, "integrity", sriFromHex(target.sha256)), "crossorigin", "anonymous");
+  });
+}
+
+function injectImportMapIntegrity(html: string, source: string, assets: Record<string, LumenTarget>): string {
+  const integrity = Object.fromEntries(
+    Object.entries(assets)
+      .filter(([path, target]) => isScriptTarget(path, target))
+      .map(([path, target]) => [new URL(path, ensureTrailingSlash(source)).toString(), sriFromHex(target.sha256)])
+  );
+  if (Object.keys(integrity).length === 0) return html;
+  const importMap = `<script type="importmap">${JSON.stringify({ integrity })}</script>`;
+  return /<script\b[^>]*type=(["'])module\1[^>]*>/iu.test(html)
+    ? html.replace(/<script\b[^>]*type=(["'])module\1[^>]*>/iu, `${importMap}$&`)
+    : `${importMap}${html}`;
+}
+
+function withHtmlAttribute(tag: string, name: string, value: string): string {
+  const escaped = escapeHtmlAttribute(value);
+  const pattern = new RegExp(`\\s${name}=(["'])[^"']*\\1`, "iu");
+  if (pattern.test(tag)) return tag.replace(pattern, ` ${name}="${escaped}"`);
+  return tag.replace(/>$/u, ` ${name}="${escaped}">`);
+}
+
+function assetPathFromHtmlUrl(value: string): string {
+  return value.replace(/^\.\//u, "").replace(/^\//u, "");
+}
+
+function isScriptTarget(path: string, target: LumenTarget): boolean {
+  return /\.(?:m?js)$/iu.test(path) || /(?:java|ecma)script/iu.test(target.mediaType ?? "");
+}
+
+function isStyleTarget(path: string, target: LumenTarget): boolean {
+  return /\.css$/iu.test(path) || /^text\/css\b/iu.test(target.mediaType ?? "");
+}
+
+function sriFromHex(hex: string): string {
+  return `sha256-${bytesToBase64(hexToBytes(hex))}`;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0 || !/^[\da-f]*$/iu.test(hex)) throw new LumenError("INVALID_TARGET", "Target SHA-256 must be hex encoded");
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  return bytes;
 }
 
 function escapeHtmlAttribute(value: string): string {
@@ -799,9 +858,13 @@ function base64ToBytes(value: string): Uint8Array {
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
+  return bytesToBase64(bytes).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return btoa(binary);
 }
 
 function base64UrlToBytes(value: string): Uint8Array {

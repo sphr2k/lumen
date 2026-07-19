@@ -9,6 +9,10 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function sriFor(bytes: Uint8Array): string {
+  return `sha256-${createHash("sha256").update(bytes).digest("base64")}`;
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -18,14 +22,16 @@ function canonicalJson(value: unknown): string {
 async function fixture(overrides: { assetBytes?: Uint8Array } = {}) {
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const publicKeyDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
-  const indexHtml = encoder.encode('<script type="module" src="./assets/app.js"></script>');
+  const indexHtml = encoder.encode('<link rel="stylesheet" href="./assets/app.css"><script type="module" src="./assets/app.js"></script>');
   const assetBytes = overrides.assetBytes ?? encoder.encode("globalThis.lumenSmoke = true;");
+  const styleBytes = encoder.encode("body { color: black; }");
   const manifestBytes = encoder.encode(JSON.stringify({
     schema: "lumen/static-web-release/1",
     version: "0.0.1",
     entrypoint: "index.html",
     assets: {
       "index.html": { sha256: sha256(indexHtml), length: indexHtml.byteLength, mediaType: "text/html" },
+      "assets/app.css": { sha256: sha256(styleBytes), length: styleBytes.byteLength, mediaType: "text/css" },
       "assets/app.js": { sha256: sha256(assetBytes), length: assetBytes.byteLength, mediaType: "text/javascript" }
     }
   }));
@@ -53,6 +59,7 @@ async function fixture(overrides: { assetBytes?: Uint8Array } = {}) {
     ["targets/releases/0.0.1/manifest.json", manifestBytes],
     ["targets/runtime/example.json", runtimeBytes],
     ["index.html", indexHtml],
+    ["assets/app.css", styleBytes],
     ["assets/app.js", assetBytes]
   ]);
   return {
@@ -122,7 +129,7 @@ describe("verifyLumenBundle", () => {
     expect(result.generation).toBe(1);
     expect(result.release.version).toBe("0.0.1");
     expect(result.runtimeBytes).toEqual(data.files.get("targets/runtime/example.json"));
-    expect([...result.assets.keys()].sort()).toEqual(["assets/app.js", "index.html"]);
+    expect([...result.assets.keys()].sort()).toEqual(["assets/app.css", "assets/app.js", "index.html"]);
   });
 
   it("falls back to another public IPFS gateway for the same CID", async () => {
@@ -228,7 +235,7 @@ describe("verifyLumenBundle", () => {
       if (path === "index.json" || path === "targets/releases/0.0.1/manifest.json") {
         return fileResponse(data.files, path);
       }
-      if (path === "index.html" && (url.hostname === "dweb.link" || url.hostname === "ipfs.io" || url.hostname === "gateway.pinata.cloud")) {
+      if ((path === "index.html" || path === "assets/app.css") && (url.hostname === "dweb.link" || url.hostname === "ipfs.io" || url.hostname === "gateway.pinata.cloud")) {
         return fileResponse(data.files, path);
       }
       if (path === "assets/app.js" && (url.hostname === "bafyfixture.ipfs.dweb.link" || url.hostname === "w3s.link")) {
@@ -279,6 +286,23 @@ describe("verifyLumenBundle", () => {
     expect(document.result.release.entrypoint).toBe("index.html");
     expect(document.html).toContain('<base href="https://example.test/bundle/">');
     expect(document.html).toContain('src="./assets/app.js"');
+  });
+
+  it("launches with browser-enforced SRI for executable and stylesheet assets", async () => {
+    const data = await fixture();
+
+    const document = await createLumenVerifiedDocument({
+      source: "https://example.test/bundle/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      fetch: data.fetch
+    });
+
+    expect(document.html).toContain(`src="./assets/app.js" integrity="${sriFor(data.files.get("assets/app.js")!)}" crossorigin="anonymous"`);
+    expect(document.html).toContain(`href="./assets/app.css" integrity="${sriFor(data.files.get("assets/app.css")!)}" crossorigin="anonymous"`);
+    expect(document.html).toContain('<script type="importmap">');
+    const importMap = JSON.parse(document.html.match(/<script type="importmap">([^<]+)<\/script>/u)![1]!) as { integrity: Record<string, string> };
+    expect(importMap.integrity["https://example.test/bundle/assets/app.js"]).toBe(sriFor(data.files.get("assets/app.js")!));
   });
 
   it("ignores a fast gateway response whose target digest does not match", async () => {
