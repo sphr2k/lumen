@@ -1,5 +1,4 @@
 node_modules
-dist
 apps/loader/dist
 .DS_Store
 *.log
