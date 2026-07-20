@@ -127,6 +127,7 @@ describe("verifyLumenBundle", () => {
     });
 
     expect(result.generation).toBe(1);
+    expect(result.bundleDigest).toBe(data.bundleDigest);
     expect(result.release.version).toBe("0.0.1");
     expect(result.runtimeBytes).toEqual(data.files.get("targets/runtime/example.json"));
     expect([...result.assets.keys()].sort()).toEqual(["assets/app.css", "assets/app.js", "index.html"]);
@@ -317,6 +318,28 @@ describe("verifyLumenBundle", () => {
     expect(document.result.release.entrypoint).toBe("index.html");
     expect(document.html).toContain('<base href="https://example.test/bundle/">');
     expect(document.html).toContain('src="./assets/app.js"');
+    expect(document.html).toContain(`globalThis.__LUMEN_LAUNCH_CONTEXT__={"profile":"lumen/launch-context/1","kind":"release","bundleDigest":"${data.bundleDigest}","bundleGeneration":1}`);
+    expect(document.html.indexOf("__LUMEN_LAUNCH_CONTEXT__")).toBeLessThan(document.html.indexOf("assets/app.js"));
+  });
+
+  it("uses one canonical origin after an IPFS gateway redirect", async () => {
+    const data = await fixture();
+    const fetch = async (input: RequestInfo | URL) => {
+      const href = input instanceof Request ? input.url : input.toString();
+      return fileResponse(data.files, fixtureGatewayPath(new URL(href)));
+    };
+
+    const document = await createLumenVerifiedDocument({
+      source: "https://dweb.link/ipfs/bafyfixture/",
+      bundleDigest: data.bundleDigest,
+      releasePath: "releases/0.0.1/manifest.json",
+      fetch,
+    });
+
+    expect(document.result.source).toBe("https://dweb.link/ipfs/bafyfixture/");
+    expect(document.html).toContain('<base href="https://bafyfixture.ipfs.dweb.link/">');
+    expect(document.html).toContain('"https://bafyfixture.ipfs.dweb.link/assets/app.js"');
+    expect(document.html).not.toContain('<base href="https://dweb.link/ipfs/bafyfixture/">');
   });
 
   it("launches with browser-enforced SRI for executable and stylesheet assets", async () => {
@@ -425,7 +448,20 @@ describe("verifyLumenBundle", () => {
     });
 
     expect(result.release.version).toBe("0.0.1");
+    expect(result.bundleDigest).toBe(data.bundleDigest);
+    expect(result.channelGeneration).toBe(1);
     expect(result.runtimeBytes).toEqual(data.files.get("targets/runtime/example.json"));
+  });
+
+  it("injects Channel and bundle generations before a channel-launched app executes", async () => {
+    const data = await channelFixture();
+    const document = await createLumenVerifiedDocument({
+      channel: "https://example.test/bundle/channel.json",
+      root: data.rootFingerprint,
+      fetch: data.fetch,
+    });
+
+    expect(document.html).toContain(`globalThis.__LUMEN_LAUNCH_CONTEXT__={"profile":"lumen/launch-context/1","kind":"channel","bundleDigest":"${data.bundleDigest}","bundleGeneration":1,"channelGeneration":1}`);
   });
 
   it("rejects a channel whose active bundle digest is revoked", async () => {

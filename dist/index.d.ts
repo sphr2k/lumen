@@ -1,6 +1,8 @@
 export type LumenVerificationResult = Readonly<{
     source: string;
+    bundleDigest: string;
     generation: number;
+    channelGeneration?: number;
     verifiedPublisher: LumenVerifiedKey;
     release: LumenStaticWebRelease;
     runtimeBytes?: Uint8Array;

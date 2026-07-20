@@ -1,6 +1,8 @@
 export type LumenVerificationResult = Readonly<{
   source: string;
+  bundleDigest: string;
   generation: number;
+  channelGeneration?: number;
   verifiedPublisher: LumenVerifiedKey;
   release: LumenStaticWebRelease;
   runtimeBytes?: Uint8Array;
@@ -172,7 +174,7 @@ export async function verifyLumenBundle(input: LumenInput): Promise<LumenVerific
     const result = await verifyLumenBundle(bundleInput);
     enforceChannelRevocations(channel.signed, result);
     enforceChannelRollback(channel.signed);
-    return result;
+    return { ...result, channelGeneration: channel.signed.generation };
   }
   const request = input.fetch ?? fetch;
   const bundleInput: LumenVerifyInput = input;
@@ -183,7 +185,7 @@ export async function createLumenVerifiedDocument(input: LumenInput): Promise<Lu
   const result = await verifyLumenBundle({ ...input, requireLaunchSource: true });
   const entrypointBytes = result.assets.get(result.release.entrypoint);
   if (entrypointBytes === undefined) throw new LumenError("INVALID_RELEASE", `Release entrypoint asset is missing: ${result.release.entrypoint}`);
-  const html = prepareLaunchHtml(textDecoder.decode(entrypointBytes), result.source, result.release.assets, input.route);
+  const html = prepareLaunchHtml(textDecoder.decode(entrypointBytes), result, input.route);
   return { result, html };
 }
 
@@ -221,6 +223,7 @@ async function verifyLumenBundleFromSources(input: LumenVerifyInput & { sources:
 
   return {
     source: launchSource ?? sources[0] ?? ensureTrailingSlash(input.source),
+    bundleDigest: normalizeSha256Fingerprint(input.bundleDigest, "bundle digest"),
     generation: index.signed.generation,
     verifiedPublisher,
     release,
@@ -352,14 +355,22 @@ export function buildLumenLaunchAssetUrl(source: string, path: string): string {
   return new URL(path, baseSource).toString();
 }
 
-function prepareLaunchHtml(html: string, source: string, assets: Record<string, LumenTarget>, route?: string): string {
+function prepareLaunchHtml(html: string, result: LumenVerificationResult, route?: string): string {
+  const launchSource = new URL(".", buildLumenLaunchAssetUrl(result.source, "index.html")).toString();
   const rewrittenHtml = injectImportMapIntegrity(
-    injectSubresourceIntegrity(rewriteRootRelativeAssetUrls(html), assets),
-    source,
-    assets
+    injectSubresourceIntegrity(rewriteRootRelativeAssetUrls(html), result.release.assets),
+    launchSource,
+    result.release.assets
   );
-  const base = `<base href="${escapeHtmlAttribute(ensureTrailingSlash(source))}">`;
-  const launchContext = route === undefined ? "" : `<script>globalThis.__LUMEN_LAUNCH_ROUTE__=${JSON.stringify(route)};</script>`;
+  const base = `<base href="${escapeHtmlAttribute(launchSource)}">`;
+  const releaseContext = {
+    profile: "lumen/launch-context/1",
+    kind: result.channelGeneration === undefined ? "release" : "channel",
+    bundleDigest: result.bundleDigest,
+    bundleGeneration: result.generation,
+    ...(result.channelGeneration === undefined ? {} : { channelGeneration: result.channelGeneration }),
+  };
+  const launchContext = `<script>globalThis.__LUMEN_LAUNCH_CONTEXT__=${JSON.stringify(releaseContext)};${route === undefined ? "" : `globalThis.__LUMEN_LAUNCH_ROUTE__=${JSON.stringify(route)};`}</script>`;
   if (/<head[^>]*>/iu.test(rewrittenHtml)) return rewrittenHtml.replace(/<head([^>]*)>/iu, `<head$1>${base}${launchContext}`);
   return `${base}${launchContext}${rewrittenHtml}`;
 }
